@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Test stub: logs argv, one call per line.
+printf '%s\n' "nft $*" >>"${STUB_TMP:?}/fw.log"

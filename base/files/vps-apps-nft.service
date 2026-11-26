@@ -1,0 +1,13 @@
+[Unit]
+Description=vps-apps host firewall (nftables table vps_apps)
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft
+ExecReload=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft
+
+[Install]
+WantedBy=multi-user.target
