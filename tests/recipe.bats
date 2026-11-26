@@ -17,8 +17,8 @@ run_recipe() {
   shift
   body="$("$RENDER" "$@" --version "$SHA"; printf x)"
   body="${body%x}"
-  body="${body//'{{root_pass}}'/$pw}"
-  body="${body//'{{vps_hostname}}'/h1.example.com}"
+  body="${body//'{{root_pass}}'/"$pw"}"
+  body="${body//'{{vps_hostname}}'/"${HOSTVAL:-h1.example.com}"}"
   if [ -z "${KEEP_IPS:-}" ]; then body="${body//'{{ips}}'/85.121.120.207}"; fi
   printf '%s' "$body" >"$BATS_TEST_TMPDIR/recipe.sh"
   sh "$BATS_TEST_TMPDIR/recipe.sh" >"$BATS_TEST_TMPDIR/recipe.out" 2>&1
@@ -27,6 +27,11 @@ run_recipe() {
 bootstrap() { bash "$VPS_APPS_ROOT/usr/local/sbin/vps-apps-bootstrap"; }
 status_now() { cat "$VPS_APPS_ROOT$STATUS"; }
 pw_file="/etc/vps-apps/password"
+
+# refute_grep <grep args>: fails the test when grep finds a match (a bare ! is ignored by bats mid-test).
+refute_grep() {
+  if grep "$@"; then return 1; fi
+}
 
 install_recipe() {
   run_recipe 'Secret9A' --app docker
@@ -55,7 +60,7 @@ install_recipe() {
 
 @test "the recipe never prints the password" {
   run_recipe 'Zz9Secret' --app docker
-  ! grep -q 'Zz9Secret' "$BATS_TEST_TMPDIR/recipe.out"
+  refute_grep -q 'Zz9Secret' "$BATS_TEST_TMPDIR/recipe.out"
 }
 
 @test "VA_IP comes from the default route" {
@@ -67,15 +72,16 @@ install_recipe() {
 @test "only the timer is enabled, with --now" {
   install_recipe
   grep -qx 'enable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
-  ! grep -q 'enable.*vps-apps-install.service' "$STUB_TMP/systemctl.log"
+  refute_grep -q 'enable.*vps-apps-install.service' "$STUB_TMP/systemctl.log"
   local svc="$VPS_APPS_ROOT/etc/systemd/system/vps-apps-install.service"
   local tmr="$VPS_APPS_ROOT/etc/systemd/system/vps-apps-install.timer"
   grep -q '^Type=oneshot$' "$svc"
   grep -q '^After=network-online.target$' "$svc"
   grep -q '^Wants=network-online.target$' "$svc"
-  ! grep -q '^\[Install\]' "$svc"
+  refute_grep -q '^\[Install\]' "$svc"
   grep -q '^OnBootSec=30$' "$tmr"
   grep -q '^OnUnitInactiveSec=60$' "$tmr"
+  grep -q '^AccuracySec=1s$' "$tmr"
   grep -q '^WantedBy=timers.target$' "$tmr"
 }
 
@@ -120,7 +126,17 @@ install_recipe() {
   [ "$(cat "$VPS_APPS_ROOT$STATE/attempts")" = 1 ]
   [ -f "$VPS_APPS_ROOT$STATE/first-attempt" ]
   [ -f "$VPS_APPS_ROOT$pw_file" ]
-  ! grep -q 'disable' "$STUB_TMP/systemctl.log"
+  refute_grep -q 'disable' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:download" ]
+}
+
+@test "a download failure does not overwrite an existing failed step" {
+  install_recipe
+  seed_failed
+  echo 7 >"$STUB_TMP/curl_rc"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(status_now)" = "failed:docker" ]
 }
 
 @test "a failing install.sh counts an attempt and keeps the timer" {
@@ -130,7 +146,7 @@ install_recipe() {
   [ "$status" -eq 0 ]
   [ "$(cat "$VPS_APPS_ROOT$STATE/attempts")" = 1 ]
   [ -f "$VPS_APPS_ROOT$pw_file" ]
-  ! grep -q 'disable' "$STUB_TMP/systemctl.log"
+  refute_grep -q 'disable' "$STUB_TMP/systemctl.log"
 }
 
 seed_failed() {
@@ -195,7 +211,7 @@ assert_finished() {
   grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
 }
 
-@test "ready makes the bootstrap a no-op" {
+@test "ready ends the timer and shreds the password but calls neither curl nor install.sh" {
   install_recipe
   mkdir -p "$VPS_APPS_ROOT$STATE/public/.well-known"
   printf 'ready' >"$VPS_APPS_ROOT$STATUS"
@@ -204,4 +220,108 @@ assert_finished() {
   [ ! -e "$STUB_TMP/curl.log" ]
   [ ! -e "$STUB_TMP/install.log" ]
   [ "$(status_now)" = ready ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+}
+
+@test "a tampered VERSION is final: failed:args, password shredded, timer disabled" {
+  install_recipe
+  sed -i 's/^VERSION=.*/VERSION=main/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:args" ]
+}
+
+@test "a hostname with a dollar sign cannot abort the recipe, and the bootstrap refuses it" {
+  HOSTVAL='a$b.example.com' run_recipe 'Secret9A' --app docker
+  [ -f "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'enable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  grep -qxF 'VA_HOST=a$b.example.com' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  [ "$(status_now)" = "failed:args" ]
+}
+
+@test "a hostname with backticks runs nothing and is refused" {
+  HOSTVAL='`touch '"$BATS_TEST_TMPDIR"'/pwned`.example.com' run_recipe 'Secret9A' --app docker
+  [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+}
+
+@test "a hostname with a newline cannot inject env lines" {
+  HOSTVAL=$'h2.example.com
+VERSION=main
+APP=n8n' run_recipe 'Secret9A' --app docker
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- "--app docker --host h2.example.com " "$STUB_TMP/install.log"
+  grep -q "tar.gz/$SHA" "$STUB_TMP/curl.log"
+}
+
+@test "an uppercase hostname is lowercased before install.sh" {
+  HOSTVAL=H3.Example.COM run_recipe 'Secret9A' --app docker
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- "--host h3.example.com " "$STUB_TMP/install.log"
+}
+
+@test "an empty VA_IP is detected again by the bootstrap" {
+  install_recipe
+  sed -i 's/^VA_IP=.*/VA_IP=/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- "--ip 85.121.120.207 " "$STUB_TMP/install.log"
+}
+
+@test "no IP at all is a retryable attempt and does not end the budget" {
+  install_recipe
+  sed -i 's/^VA_IP=.*/VA_IP=junk/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  : >"$STUB_TMP/ip_empty"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ ! -e "$STUB_TMP/install.log" ]
+  [ "$(cat "$VPS_APPS_ROOT$STATE/attempts")" = 1 ]
+  [ -f "$VPS_APPS_ROOT$pw_file" ]
+  refute_grep -q 'disable' "$STUB_TMP/systemctl.log"
+}
+
+@test "a hung install.sh is killed at the end of the budget and the final status is failed:timeout" {
+  install_recipe
+  echo 600 >"$STUB_TMP/install_sleep"
+  echo 3 >"$VPS_APPS_ROOT$STATE/attempts"
+  echo $(($(date +%s) - 2698)) >"$VPS_APPS_ROOT$STATE/first-attempt"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:timeout" ]
+}
+
+@test "exit 2 and exit 3 from install.sh write failed:args and failed:os" {
+  install_recipe
+  echo 2 >"$STUB_TMP/install_rc"
+  run bootstrap
+  [ "$(status_now)" = "failed:args" ]
+  echo 3 >"$STUB_TMP/install_rc"
+  rm -f "$VPS_APPS_ROOT$STATUS"
+  run bootstrap
+  [ "$status" -eq 3 ]
+  [ "$(status_now)" = "failed:os" ]
+}
+
+@test "the budget ending replaces installing with a failed status" {
+  install_recipe
+  mkdir -p "$VPS_APPS_ROOT$STATE/public/.well-known"
+  printf 'installing' >"$VPS_APPS_ROOT$STATUS"
+  echo 30 >"$VPS_APPS_ROOT$STATE/attempts"
+  date +%s >"$VPS_APPS_ROOT$STATE/first-attempt"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(status_now)" = "failed:timeout" ]
 }
