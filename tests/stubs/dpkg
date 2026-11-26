@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test stub: logs "dpkg <argv>" to the shared calls log; answers --print-architecture.
+printf '%s\n' "dpkg $*" >>"${STUB_TMP:?}/calls.log"
+[ "${1:-}" = "--print-architecture" ] && echo amd64
+exit 0

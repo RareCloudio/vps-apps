@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Test stub: logs "mkswap <argv>" to the shared calls log.
+printf '%s\n' "mkswap $*" >>"${STUB_TMP:?}/calls.log"

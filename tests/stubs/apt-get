@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Test stub: logs "apt-get <argv>" to the shared calls log.
+printf '%s\n' "apt-get $*" >>"${STUB_TMP:?}/calls.log"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Test stub: logs "fallocate <argv>" to the shared calls log.
+printf '%s\n' "fallocate $*" >>"${STUB_TMP:?}/calls.log"
+: >"${*: -1}"
