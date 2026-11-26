@@ -3,8 +3,9 @@
 # It only leaves files and a systemd timer behind. The timer-driven bootstrap later
 # downloads one pinned commit of this repo and runs install.sh. Nothing here needs
 # the internet, and nothing here prints the password (the recipe log is world-readable).
-# Rendered by bin/render-recipe: __APP__, __MODE__ and __VERSION__ are replaced there;
-# the Virtualizor tokens are replaced by the panel at provisioning.
+# bin/render-recipe fills in the app, mode and version; the panel fills in the
+# Virtualizor tokens at provisioning. Panel values only ever sit in QUOTED heredocs,
+# so no character in them is interpreted by this shell.
 set -eu
 umask 077
 
@@ -14,13 +15,17 @@ mkdir -p "$R/etc/vps-apps" "$R/var/lib/vps-apps" "$R/usr/local/sbin" "$R/etc/sys
 
 VA_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.][0-9.]*\).*/\1/p' | head -n 1)"
 
-cat >"$R/etc/vps-apps/env" <<ENV_END
+cat >"$R/etc/vps-apps/env" <<'ENV_END'
 APP=__APP__
 MODE=__MODE__
 VERSION=__VERSION__
-VA_HOST={{vps_hostname}}
-VA_IP=$VA_IP
 ENV_END
+printf 'VA_IP=%s\n' "$VA_IP" >>"$R/etc/vps-apps/env"
+# The host comes last: the bootstrap keeps the first value of each key, so a hostname
+# with an embedded newline cannot override the lines above.
+cat >>"$R/etc/vps-apps/env" <<'VPS_APPS_HOST_END_7f3a'
+VA_HOST={{vps_hostname}}
+VPS_APPS_HOST_END_7f3a
 
 # The password comes from a quoted heredoc, so no character in it is interpreted.
 # The heredoc adds one trailing newline, which is removed again.
@@ -45,12 +50,17 @@ STATUS_DIR="$STATE/public/.well-known"
 STATUS_FILE="$STATUS_DIR/rarecloud-app-status"
 FIRST="$STATE/first-attempt"
 ATTEMPTS="$STATE/attempts"
+LAST_FAILURE="$STATE/last-failure"
 MAX_ATTEMPTS=30
 MAX_SECONDS=2700
 TIMER=vps-apps-install.timer
 
+# The first value of each key wins, so later (injected) lines are ignored.
 APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
+seen=" "
 while IFS='=' read -r key value; do
+  case "$seen" in *" $key "*) continue ;; esac
+  seen="$seen$key "
   case "$key" in
     APP) APP="$value" ;;
     MODE) MODE="$value" ;;
@@ -63,86 +73,114 @@ done <"$ENV_FILE"
 
 current_status() { cat "$STATUS_FILE" 2>/dev/null || true; }
 
+# write_status <value>: atomic replace, same shape as lib/steps.sh set_status.
+write_status() {
+  local tmp
+  mkdir -p "$STATUS_DIR"
+  tmp="$(mktemp "$STATE/.status.XXXXXX")"
+  printf '%s' "$1" >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$STATUS_FILE"
+}
+
+# mark_failed <reason>: failed:<reason> unless a failed:<step> is already there.
+mark_failed() {
+  case "$(current_status)" in
+    failed:*) ;;
+    *) write_status "failed:$1" ;;
+  esac
+}
+
 # finish: the timer is switched off and the password is destroyed.
 finish() {
   if [ -e "$PW_FILE" ]; then shred -u "$PW_FILE" 2>/dev/null || rm -f "$PW_FILE"; fi
   systemctl disable --now "$TIMER" || true
 }
 
-budget_spent() {
-  local n=0 first now
-  [ -f "$ATTEMPTS" ] && n="$(cat "$ATTEMPTS")"
-  [ "$n" -ge "$MAX_ATTEMPTS" ] && return 0
-  if [ -f "$FIRST" ]; then
-    first="$(cat "$FIRST")"
-    now="$(date +%s)"
-    [ $((now - first)) -ge "$MAX_SECONDS" ] && return 0
+finish_failed() {
+  mark_failed "$1"
+  finish
+}
+
+attempts_made() {
+  local n=0
+  if [ -f "$ATTEMPTS" ]; then n="$(cat "$ATTEMPTS")"; fi
+  echo "$n"
+}
+
+seconds_left() {
+  local first now
+  if [ ! -f "$FIRST" ]; then
+    echo "$MAX_SECONDS"
+    return 0
   fi
+  first="$(cat "$FIRST")"
+  now="$(date +%s)"
+  echo $((MAX_SECONDS - (now - first)))
+}
+
+budget_spent() {
+  [ "$(attempts_made)" -ge "$MAX_ATTEMPTS" ] && return 0
+  [ "$(seconds_left)" -le 0 ] && return 0
   return 1
 }
 
+last_reason() { cat "$LAST_FAILURE" 2>/dev/null || echo timeout; }
+
+# retry_later <reason>: this attempt failed. The timer runs again unless the budget is spent.
+retry_later() {
+  echo "$1" >"$LAST_FAILURE"
+  if budget_spent; then finish_failed "$1"; fi
+  exit 0
+}
+
 # The env file is only trusted after the fields are checked: VERSION is pinned to a commit.
-case "$APP" in docker | n8n) ;; *)
-  echo "vps-apps-bootstrap: bad APP in $ENV_FILE" >&2
-  finish
+bad_env() {
+  echo "vps-apps-bootstrap: $1 in $ENV_FILE" >&2
+  finish_failed args
   exit 2
-  ;;
-esac
-case "$MODE" in "" | starter | pro) ;; *)
-  echo "vps-apps-bootstrap: bad MODE in $ENV_FILE" >&2
+}
+case "$APP" in docker | n8n) ;; *) bad_env "bad APP" ;; esac
+case "$MODE" in "" | starter | pro) ;; *) bad_env "bad MODE" ;; esac
+[[ "$VERSION" =~ ^[0-9a-f]{40}$ ]] || bad_env "VERSION is not a 40 character commit"
+[[ "$VA_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || bad_env "VA_HOST has characters outside A-Za-z0-9.-"
+VA_HOST="${VA_HOST,,}"
+
+if [ "$(current_status)" = ready ]; then
   finish
-  exit 2
-  ;;
-esac
-if ! [[ "$VERSION" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "vps-apps-bootstrap: VERSION in $ENV_FILE is not a 40 character commit" >&2
-  finish
-  exit 2
+  exit 0
 fi
 
-[ "$(current_status)" = ready ] && exit 0
-
 if budget_spent; then
-  finish
+  finish_failed "$(last_reason)"
   exit 0
 fi
 
 mkdir -p "$STATE"
-[ -f "$FIRST" ] || date +%s >"$FIRST"
-n=0
-[ -f "$ATTEMPTS" ] && n="$(cat "$ATTEMPTS")"
-echo $((n + 1)) >"$ATTEMPTS"
+if [ ! -f "$FIRST" ]; then date +%s >"$FIRST"; fi
+echo $(($(attempts_made) + 1)) >"$ATTEMPTS"
 
-# set_download_failed: say something on the status file when nothing else has yet.
-set_download_failed() {
-  [ -e "$STATUS_FILE" ] && return 0
-  mkdir -p "$STATUS_DIR"
-  printf '%s' 'failed:download' >"$STATUS_FILE.tmp"
-  chmod 0644 "$STATUS_FILE.tmp"
-  mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"
-}
-
-# retry_later: this attempt failed. The timer runs again unless that was the last attempt.
-retry_later() {
-  if budget_spent; then finish; fi
-  exit 0
-}
+octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+ip_re="^${octet}(\\.${octet}){3}\$"
+if ! [[ "$VA_IP" =~ $ip_re ]]; then
+  VA_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.][0-9.]*\).*/\1/p' | head -n 1)"
+  if ! [[ "$VA_IP" =~ $ip_re ]]; then
+    echo "vps-apps-bootstrap: no IPv4 address yet" >&2
+    retry_later args
+  fi
+fi
 
 CODE="$R/opt/vps-apps/$VERSION"
 if [ ! -x "$CODE/install.sh" ]; then
   mkdir -p "$R/opt/vps-apps"
   work="$(mktemp -d "$R/opt/vps-apps/.dl.XXXXXX")"
-  if ! curl -fsSL --retry 2 --max-time 120 -o "$work/src.tar.gz" \
-    "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/${VERSION}"; then
-    rm -rf "$work"
-    set_download_failed
-    retry_later
-  fi
   mkdir "$work/src"
-  if ! tar -xzf "$work/src.tar.gz" -C "$work/src" --strip-components=1; then
+  if ! curl -fsSL --retry 2 --max-time 120 -o "$work/src.tar.gz" \
+    "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/${VERSION}" ||
+    ! tar -xzf "$work/src.tar.gz" -C "$work/src" --strip-components=1; then
     rm -rf "$work"
-    set_download_failed
-    retry_later
+    mark_failed download
+    retry_later download
   fi
   rm -rf "$CODE"
   mv "$work/src" "$CODE"
@@ -153,19 +191,29 @@ ln -sfn "$CODE" "$R/opt/vps-apps/current"
 args=(--app "$APP" --host "$VA_HOST" --ip "$VA_IP" --password-file "$PW_FILE")
 [ -z "$MODE" ] || args+=(--mode "$MODE")
 
+# Contract: install.sh runs with umask 022; every secret file it or this script writes
+# gets an explicit chmod (the password file is 0600).
+umask 022
+left="$(seconds_left)"
+[ "$left" -ge 1 ] || left=1
 rc=0
-"$R/opt/vps-apps/current/install.sh" "${args[@]}" || rc=$?
+timeout --kill-after=30 "$left" "$R/opt/vps-apps/current/install.sh" "${args[@]}" || rc=$?
 
 case "$rc" in
   0)
     finish
     exit 0
     ;;
-  2 | 3)
-    finish
-    exit "$rc"
+  2)
+    finish_failed args
+    exit 2
     ;;
-  *) retry_later ;;
+  3)
+    finish_failed os
+    exit 3
+    ;;
+  124 | 137) retry_later timeout ;;
+  *) retry_later install ;;
 esac
 VPS_APPS_BOOTSTRAP_END_7f3a
 chmod 0755 "$R/usr/local/sbin/vps-apps-bootstrap"
@@ -189,6 +237,7 @@ Description=Run the RareCloud app installer until it is ready
 [Timer]
 OnBootSec=30
 OnUnitInactiveSec=60
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
