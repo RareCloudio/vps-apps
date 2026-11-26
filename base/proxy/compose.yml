@@ -1,0 +1,49 @@
+# The HTTPS reverse proxy for every app: caddy-docker-proxy configured from container labels
+# plus the base Caddyfile in /etc/vps-apps/caddy. Docker is reached only through a socket
+# proxy on an internal network. Images come from the .env next to this file (digest pinned);
+# the defaults below only keep the file valid on its own.
+name: vps-apps-proxy
+
+services:
+  socket-proxy:
+    image: ${SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:latest}
+    restart: unless-stopped
+    environment:
+      CONTAINERS: "1"
+      NETWORKS: "1"
+      POST: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket
+
+  caddy:
+    image: ${CADDY_IMAGE:-lucaslorentz/caddy-docker-proxy:2.13.1-alpine}
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      CADDY_INGRESS_NETWORKS: web
+      CADDY_DOCKER_CADDYFILE_PATH: /etc/caddy/Caddyfile
+      CADDY_DOCKER_POLLING_INTERVAL: 5s
+    volumes:
+      - /var/lib/vps-apps/public:/srv/public:ro
+      - /etc/vps-apps/caddy:/etc/caddy:ro
+      - caddy_data:/data
+    networks:
+      - socket
+      - web
+
+volumes:
+  caddy_data:
+
+networks:
+  socket:
+    internal: true
+  web:
+    external: true

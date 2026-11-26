@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test stub: logs argv and prints the contents of STUB_TMP/dig_answer when it exists.
+printf '%s\n' "$*" >>"${STUB_TMP:?}/dig.log"
+[ -f "$STUB_TMP/dig_answer" ] && cat "$STUB_TMP/dig_answer"
+exit 0
