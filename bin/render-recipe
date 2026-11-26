@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Prints the first-boot recipe for an app. Used by tests and by the release endpoint.
+# Usage: render-recipe --app <docker|n8n> [--mode starter|pro] --version <40 hex chars>
+# Replaces only __APP__, __MODE__ and __VERSION__; the Virtualizor {{tokens}} stay as they are.
+set -euo pipefail
+
+die() {
+  echo "render-recipe: $1" >&2
+  echo "usage: render-recipe --app <docker|n8n> [--mode starter|pro] --version <sha40>" >&2
+  exit 2
+}
+
+app="" mode="" version=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app | --mode | --version)
+      [ $# -ge 2 ] || die "$1 needs a value"
+      case "$1" in
+        --app) app="$2" ;;
+        --mode) mode="$2" ;;
+        --version) version="$2" ;;
+      esac
+      shift 2
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$app" in
+  docker | n8n) ;;
+  "") die "--app is required" ;;
+  *) die "--app must be docker or n8n" ;;
+esac
+if [ -n "$mode" ]; then
+  [ "$app" = n8n ] || die "--mode is only valid with --app n8n"
+  case "$mode" in
+    starter | pro) ;;
+    *) die "--mode must be starter or pro" ;;
+  esac
+fi
+[[ "$version" =~ ^[0-9a-f]{40}$ ]] || die "--version must be 40 lowercase hex characters"
+
+tmpl="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/recipe/recipe.sh.tmpl"
+content="$(cat "$tmpl"; printf x)"
+content="${content%x}"
+content="${content//__APP__/$app}"
+content="${content//__MODE__/$mode}"
+content="${content//__VERSION__/$version}"
+printf '%s' "$content"

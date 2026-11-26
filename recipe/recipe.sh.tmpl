@@ -1,0 +1,199 @@
+# shellcheck shell=sh
+# First-boot recipe run once by the Virtualizor panel (POSIX sh, run by dash).
+# It only leaves files and a systemd timer behind. The timer-driven bootstrap later
+# downloads one pinned commit of this repo and runs install.sh. Nothing here needs
+# the internet, and nothing here prints the password (the recipe log is world-readable).
+# Rendered by bin/render-recipe: __APP__, __MODE__ and __VERSION__ are replaced there;
+# the Virtualizor tokens are replaced by the panel at provisioning.
+set -eu
+umask 077
+
+R="${VPS_APPS_ROOT:-}"
+
+mkdir -p "$R/etc/vps-apps" "$R/var/lib/vps-apps" "$R/usr/local/sbin" "$R/etc/systemd/system"
+
+VA_IP="$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.][0-9.]*\).*/\1/p' | head -n 1)"
+
+cat >"$R/etc/vps-apps/env" <<ENV_END
+APP=__APP__
+MODE=__MODE__
+VERSION=__VERSION__
+VA_HOST={{vps_hostname}}
+VA_IP=$VA_IP
+ENV_END
+
+# The password comes from a quoted heredoc, so no character in it is interpreted.
+# The heredoc adds one trailing newline, which is removed again.
+cat >"$R/etc/vps-apps/password" <<'VPS_APPS_PW_END_7f3a'
+{{root_pass}}
+VPS_APPS_PW_END_7f3a
+truncate -s -1 "$R/etc/vps-apps/password"
+chmod 0600 "$R/etc/vps-apps/password"
+
+cat >"$R/usr/local/sbin/vps-apps-bootstrap" <<'VPS_APPS_BOOTSTRAP_END_7f3a'
+#!/usr/bin/env bash
+# Runs from vps-apps-install.timer every 60 seconds until the install is ready or the
+# budget (45 minutes or 30 attempts) is spent. Self-contained until the tarball is extracted.
+set -euo pipefail
+umask 077
+
+R="${VPS_APPS_ROOT:-}"
+ENV_FILE="$R/etc/vps-apps/env"
+PW_FILE="$R/etc/vps-apps/password"
+STATE="$R/var/lib/vps-apps"
+STATUS_DIR="$STATE/public/.well-known"
+STATUS_FILE="$STATUS_DIR/rarecloud-app-status"
+FIRST="$STATE/first-attempt"
+ATTEMPTS="$STATE/attempts"
+MAX_ATTEMPTS=30
+MAX_SECONDS=2700
+TIMER=vps-apps-install.timer
+
+APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
+while IFS='=' read -r key value; do
+  case "$key" in
+    APP) APP="$value" ;;
+    MODE) MODE="$value" ;;
+    VERSION) VERSION="$value" ;;
+    VA_HOST) VA_HOST="$value" ;;
+    VA_IP) VA_IP="$value" ;;
+    *) ;;
+  esac
+done <"$ENV_FILE"
+
+current_status() { cat "$STATUS_FILE" 2>/dev/null || true; }
+
+# finish: the timer is switched off and the password is destroyed.
+finish() {
+  if [ -e "$PW_FILE" ]; then shred -u "$PW_FILE" 2>/dev/null || rm -f "$PW_FILE"; fi
+  systemctl disable --now "$TIMER" || true
+}
+
+budget_spent() {
+  local n=0 first now
+  [ -f "$ATTEMPTS" ] && n="$(cat "$ATTEMPTS")"
+  [ "$n" -ge "$MAX_ATTEMPTS" ] && return 0
+  if [ -f "$FIRST" ]; then
+    first="$(cat "$FIRST")"
+    now="$(date +%s)"
+    [ $((now - first)) -ge "$MAX_SECONDS" ] && return 0
+  fi
+  return 1
+}
+
+# The env file is only trusted after the fields are checked: VERSION is pinned to a commit.
+case "$APP" in docker | n8n) ;; *)
+  echo "vps-apps-bootstrap: bad APP in $ENV_FILE" >&2
+  finish
+  exit 2
+  ;;
+esac
+case "$MODE" in "" | starter | pro) ;; *)
+  echo "vps-apps-bootstrap: bad MODE in $ENV_FILE" >&2
+  finish
+  exit 2
+  ;;
+esac
+if ! [[ "$VERSION" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "vps-apps-bootstrap: VERSION in $ENV_FILE is not a 40 character commit" >&2
+  finish
+  exit 2
+fi
+
+[ "$(current_status)" = ready ] && exit 0
+
+if budget_spent; then
+  finish
+  exit 0
+fi
+
+mkdir -p "$STATE"
+[ -f "$FIRST" ] || date +%s >"$FIRST"
+n=0
+[ -f "$ATTEMPTS" ] && n="$(cat "$ATTEMPTS")"
+echo $((n + 1)) >"$ATTEMPTS"
+
+# set_download_failed: say something on the status file when nothing else has yet.
+set_download_failed() {
+  [ -e "$STATUS_FILE" ] && return 0
+  mkdir -p "$STATUS_DIR"
+  printf '%s' 'failed:download' >"$STATUS_FILE.tmp"
+  chmod 0644 "$STATUS_FILE.tmp"
+  mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"
+}
+
+# retry_later: this attempt failed. The timer runs again unless that was the last attempt.
+retry_later() {
+  if budget_spent; then finish; fi
+  exit 0
+}
+
+CODE="$R/opt/vps-apps/$VERSION"
+if [ ! -x "$CODE/install.sh" ]; then
+  mkdir -p "$R/opt/vps-apps"
+  work="$(mktemp -d "$R/opt/vps-apps/.dl.XXXXXX")"
+  if ! curl -fsSL --retry 2 --max-time 120 -o "$work/src.tar.gz" \
+    "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/${VERSION}"; then
+    rm -rf "$work"
+    set_download_failed
+    retry_later
+  fi
+  mkdir "$work/src"
+  if ! tar -xzf "$work/src.tar.gz" -C "$work/src" --strip-components=1; then
+    rm -rf "$work"
+    set_download_failed
+    retry_later
+  fi
+  rm -rf "$CODE"
+  mv "$work/src" "$CODE"
+  rm -rf "$work"
+fi
+ln -sfn "$CODE" "$R/opt/vps-apps/current"
+
+args=(--app "$APP" --host "$VA_HOST" --ip "$VA_IP" --password-file "$PW_FILE")
+[ -z "$MODE" ] || args+=(--mode "$MODE")
+
+rc=0
+"$R/opt/vps-apps/current/install.sh" "${args[@]}" || rc=$?
+
+case "$rc" in
+  0)
+    finish
+    exit 0
+    ;;
+  2 | 3)
+    finish
+    exit "$rc"
+    ;;
+  *) retry_later ;;
+esac
+VPS_APPS_BOOTSTRAP_END_7f3a
+chmod 0755 "$R/usr/local/sbin/vps-apps-bootstrap"
+
+# No [Install] section on the service: boot never waits on it, the timer starts it.
+cat >"$R/etc/systemd/system/vps-apps-install.service" <<'UNIT_END'
+[Unit]
+Description=RareCloud app installer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vps-apps-bootstrap
+UNIT_END
+
+cat >"$R/etc/systemd/system/vps-apps-install.timer" <<'UNIT_END'
+[Unit]
+Description=Run the RareCloud app installer until it is ready
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=60
+
+[Install]
+WantedBy=timers.target
+UNIT_END
+chmod 0644 "$R/etc/systemd/system/vps-apps-install.service" "$R/etc/systemd/system/vps-apps-install.timer"
+
+systemctl daemon-reload
+systemctl enable --now vps-apps-install.timer

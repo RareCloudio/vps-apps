@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Test stub: logs argv. Exits with the code in $STUB_TMP/curl_rc when that file exists.
+# Otherwise writes (to the -o target) a tarball with one top-level directory holding a
+# fake install.sh that logs its argv and exits with the code in $STUB_TMP/install_rc.
+set -eu
+printf '%s\n' "$*" >>"$STUB_TMP/curl.log"
+if [ -f "$STUB_TMP/curl_rc" ]; then
+  exit "$(cat "$STUB_TMP/curl_rc")"
+fi
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+work="$(mktemp -d)"
+mkdir "$work/vps-apps-x"
+cat >"$work/vps-apps-x/install.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$STUB_TMP/install.log"
+if [ -f "$STUB_TMP/install_rc" ]; then exit "\$(cat "$STUB_TMP/install_rc")"; fi
+exit 0
+SH
+chmod +x "$work/vps-apps-x/install.sh"
+tar -C "$work" -czf "$out" vps-apps-x
+rm -rf "$work"
