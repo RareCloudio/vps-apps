@@ -21,8 +21,8 @@ MODE=__MODE__
 VERSION=__VERSION__
 ENV_END
 printf 'VA_IP=%s\n' "$VA_IP" >>"$R/etc/vps-apps/env"
-# The host comes last: the bootstrap keeps the first value of each key, so a hostname
-# with an embedded newline cannot override the lines above.
+# The host comes last. A hostname with an embedded newline makes the env file invalid,
+# and the bootstrap then ends with failed:args.
 cat >>"$R/etc/vps-apps/env" <<'VPS_APPS_HOST_END_7f3a'
 VA_HOST={{vps_hostname}}
 VPS_APPS_HOST_END_7f3a
@@ -55,22 +55,6 @@ MAX_ATTEMPTS=30
 MAX_SECONDS=2700
 TIMER=vps-apps-install.timer
 
-# The first value of each key wins, so later (injected) lines are ignored.
-APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
-seen=" "
-while IFS='=' read -r key value; do
-  case "$seen" in *" $key "*) continue ;; esac
-  seen="$seen$key "
-  case "$key" in
-    APP) APP="$value" ;;
-    MODE) MODE="$value" ;;
-    VERSION) VERSION="$value" ;;
-    VA_HOST) VA_HOST="$value" ;;
-    VA_IP) VA_IP="$value" ;;
-    *) ;;
-  esac
-done <"$ENV_FILE"
-
 current_status() { cat "$STATUS_FILE" 2>/dev/null || true; }
 
 # write_status <value>: atomic replace, same shape as lib/steps.sh set_status.
@@ -83,12 +67,18 @@ write_status() {
   mv -f "$tmp" "$STATUS_FILE"
 }
 
-# mark_failed <reason>: failed:<reason> unless a failed:<step> is already there.
+# Reserved bootstrap reasons: download, args, os, timeout, install. They are owned by this
+# script and may be overwritten by a later one. install.sh steps must never use them as
+# step names: any other failed:<step> comes from install.sh and is kept.
+# mark_failed <reason>: writes failed:<reason> unless the status is ready or a failed:<step>
+# written by install.sh. A failed write must never stop finish (it shreds the password).
 mark_failed() {
   case "$(current_status)" in
-    failed:*) ;;
-    *) write_status "failed:$1" ;;
+    ready) return 0 ;;
+    failed:download | failed:args | failed:os | failed:timeout | failed:install) ;;
+    failed:*) return 0 ;;
   esac
+  write_status "failed:$1" || true
 }
 
 # finish: the timer is switched off and the password is destroyed.
@@ -129,27 +119,43 @@ last_reason() { cat "$LAST_FAILURE" 2>/dev/null || echo timeout; }
 
 # retry_later <reason>: this attempt failed. The timer runs again unless the budget is spent.
 retry_later() {
-  echo "$1" >"$LAST_FAILURE"
+  echo "$1" >"$LAST_FAILURE" || true
   if budget_spent; then finish_failed "$1"; fi
   exit 0
 }
 
-# The env file is only trusted after the fields are checked: VERSION is pinned to a commit.
+# ready is checked first: it must never be overwritten, and the password is destroyed.
+if [ "$(current_status)" = ready ]; then
+  finish
+  exit 0
+fi
+
+# The env file is only trusted after it is checked: five known keys, each once, and VERSION
+# pinned to a commit.
 bad_env() {
   echo "vps-apps-bootstrap: $1 in $ENV_FILE" >&2
   finish_failed args
   exit 2
 }
+APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
+seen=" "
+while IFS='=' read -r key value; do
+  case "$seen" in *" $key "*) bad_env "repeated key $key" ;; esac
+  seen="$seen$key "
+  case "$key" in
+    APP) APP="$value" ;;
+    MODE) MODE="$value" ;;
+    VERSION) VERSION="$value" ;;
+    VA_HOST) VA_HOST="$value" ;;
+    VA_IP) VA_IP="$value" ;;
+    *) bad_env "unknown line" ;;
+  esac
+done <"$ENV_FILE"
 case "$APP" in docker | n8n) ;; *) bad_env "bad APP" ;; esac
 case "$MODE" in "" | starter | pro) ;; *) bad_env "bad MODE" ;; esac
 [[ "$VERSION" =~ ^[0-9a-f]{40}$ ]] || bad_env "VERSION is not a 40 character commit"
 [[ "$VA_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || bad_env "VA_HOST has characters outside A-Za-z0-9.-"
 VA_HOST="${VA_HOST,,}"
-
-if [ "$(current_status)" = ready ]; then
-  finish
-  exit 0
-fi
 
 if budget_spent; then
   finish_failed "$(last_reason)"
@@ -194,6 +200,7 @@ args=(--app "$APP" --host "$VA_HOST" --ip "$VA_IP" --password-file "$PW_FILE")
 # Contract: install.sh runs with umask 022; every secret file it or this script writes
 # gets an explicit chmod (the password file is 0600).
 umask 022
+write_status installing || true
 left="$(seconds_left)"
 [ "$left" -ge 1 ] || left=1
 rc=0
