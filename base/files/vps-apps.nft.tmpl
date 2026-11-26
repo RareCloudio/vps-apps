@@ -1,0 +1,16 @@
+# Managed by vps-apps. Regenerated from /etc/vps-apps/open-ports by `rc port`.
+# Only this table is replaced; every other nftables table stays untouched.
+table inet vps_apps {}
+delete table inet vps_apps
+table inet vps_apps {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+    ip protocol icmp accept
+    icmpv6 type { echo-request, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+    tcp dport { 22, 80, 443 } accept
+@OPEN_PORT_RULES@
+  }
+}

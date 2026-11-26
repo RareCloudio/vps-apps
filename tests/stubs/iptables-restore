@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test stub: logs argv and, when the last argument is a file, its content.
+printf '%s\n' "iptables-restore $*" >>"${STUB_TMP:?}/fw.log"
+last="${!#}"
+[ -f "$last" ] && cat "$last" >>"${STUB_TMP}/iptables-restore.in"
+exit 0

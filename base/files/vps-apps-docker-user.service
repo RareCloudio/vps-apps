@@ -1,0 +1,14 @@
+[Unit]
+Description=vps-apps firewall for Docker published ports (DOCKER-USER, IPv4 and IPv6)
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/iptables-restore -n /etc/vps-apps/docker-user.v4
+# The IPv6 file only exists when the VPS has an IPv6 default route.
+ExecStart=/bin/sh -c '[ ! -e /etc/vps-apps/docker-user.v6 ] || exec /usr/sbin/ip6tables-restore -n /etc/vps-apps/docker-user.v6'
+
+[Install]
+WantedBy=docker.service
