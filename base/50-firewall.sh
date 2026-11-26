@@ -192,6 +192,7 @@ fw_apply_staged() {
 
 # firewall_apply [candidate-ports-file]: apply open-ports (or the candidate, which replaces
 # open-ports only when everything loaded).
+# shellcheck disable=SC2119,SC2120 # the optional candidate argument is passed by bin/rc.d/port.sh
 firewall_apply() {
   fw_lock
   local dir stage rc=0
