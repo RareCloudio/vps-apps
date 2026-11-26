@@ -1,0 +1,17 @@
+# Base Caddyfile, rendered by set_site_mode (mode: @MODE@). caddy-docker-proxy merges the
+# container labels into this file and rebuilds the config itself, so nothing ever calls
+# a caddy reload.
+{
+	email abuse@rarecloud.io
+}
+
+# The install status, served by IP over plain HTTP with any Host header.
+:80 {
+	handle /.well-known/rarecloud-app-status {
+		root * /srv/public
+		header Content-Type text/plain
+		header Cache-Control no-store
+		file_server
+	}
+}
+@SITES@
