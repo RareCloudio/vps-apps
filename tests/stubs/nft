@@ -1,3 +1,12 @@
 #!/usr/bin/env bash
-# Test stub: logs argv, one call per line.
+# Test stub: logs argv and the loaded file. Failure injection through files in STUB_TMP:
+# fail_nft_check (for -c) and fail_nft_load (for a real load).
 printf '%s\n' "nft $*" >>"${STUB_TMP:?}/fw.log"
+last="${!#}"
+if [[ " $* " == *" -c "* ]]; then
+  [ -e "$STUB_TMP/fail_nft_check" ] && exit 1
+  exit 0
+fi
+[ -e "$STUB_TMP/fail_nft_load" ] && exit 1
+[ -f "$last" ] && cat "$last" >>"$STUB_TMP/nft.in"
+exit 0

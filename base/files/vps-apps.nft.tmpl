@@ -9,7 +9,8 @@ table inet vps_apps {
     ct state established,related accept
     ct state invalid drop
     ip protocol icmp accept
-    icmpv6 type { echo-request, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+    icmpv6 type { echo-request, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+    ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
     tcp dport { 22, 80, 443 } accept
 @OPEN_PORT_RULES@
   }

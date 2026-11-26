@@ -1,0 +1,13 @@
+[Unit]
+Description=vps-apps firewall for Docker published ports, loaded before dockerd starts containers
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/iptables-restore -n /etc/vps-apps/docker-user.v4
+# The IPv6 file only exists when ip6tables is available.
+ExecStart=/bin/sh -c '[ ! -e /etc/vps-apps/docker-user.v6 ] || exec /usr/sbin/ip6tables-restore -n /etc/vps-apps/docker-user.v6'
+
+[Install]
+WantedBy=docker.service

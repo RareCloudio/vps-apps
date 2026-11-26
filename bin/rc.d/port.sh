@@ -3,32 +3,29 @@
 
 # rc_port_parse <arg>: print the normalised "<port>/<tcp|udp>", or exit 2.
 rc_port_parse() {
-  local port="${1%%/*}" proto=tcp
-  if [[ "$1" == */* ]]; then
-    proto="${1#*/}"
-  fi
-  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || [ "$((10#$port))" -lt 1 ] || [ "$((10#$port))" -gt 65535 ]; then
-    echo "rc port: '$1' is not a port between 1 and 65535" >&2
+  local entry
+  if ! entry="$(fw_norm_entry "$1")"; then
+    echo "rc port: '$1' is not <port>[/tcp|/udp] with a port from 1 to 65535" >&2
     exit 2
   fi
-  if [ "$proto" != tcp ] && [ "$proto" != udp ]; then
-    echo "rc port: protocol must be tcp or udp, not '$proto'" >&2
-    exit 2
-  fi
-  printf '%s/%s\n' "$((10#$port))" "$proto"
+  printf '%s\n' "$entry"
 }
 
-# rc_port_write <file> [entries...]: replace the open-ports file atomically.
-rc_port_write() {
-  local file="$1" tmp
+# rc_port_apply <file> <entries...>: write the candidate list and apply it; open-ports is
+# replaced only when every layer loaded.
+rc_port_apply() {
+  local file="$1" cand
   shift
-  tmp="$file.tmp.$$"
-  : >"$tmp"
+  cand="$(mktemp "$(dirname "$file")/.open-ports.XXXXXX")"
+  : >"$cand"
   if [ "$#" -gt 0 ]; then
-    printf '%s\n' "$@" >"$tmp"
+    printf '%s\n' "$@" >"$cand"
   fi
-  chmod 0644 "$tmp"
-  mv "$tmp" "$file"
+  if ! firewall_apply "$cand"; then
+    rm -f "$cand"
+    echo "rc port: could not apply the change, nothing changed" >&2
+    exit 1
+  fi
 }
 
 rc_port() {
@@ -37,45 +34,60 @@ rc_port() {
   if [ "$#" -gt 0 ]; then
     shift
   fi
-  file="$(p /etc/vps-apps/open-ports)"
-  mkdir -p "$(dirname "$file")"
   case "$action" in
-    open | close)
-      [ "$#" -eq 1 ] || rc_usage
-      entry="$(rc_port_parse "$1")"
-      if [ "$action" = close ] && [[ "$entry" == 80/* || "$entry" == 443/* ]]; then
-        echo "rc port: 80 and 443 carry the proxy and stay open" >&2
-        exit 2
-      fi
-      mapfile -t current < <(fw_open_ports "$file")
-      have=no
-      kept=()
-      for e in "${current[@]}"; do
-        if [ "$e" = "$entry" ]; then
-          have=yes
-        else
-          kept+=("$e")
-        fi
-      done
-      if [ "$action" = open ] && [ "$have" = yes ]; then
-        echo "$entry is already open"
-      elif [ "$action" = open ]; then
-        rc_port_write "$file" "${current[@]}" "$entry"
-        firewall_apply
-        echo "opened $entry"
-      elif [ "$have" = no ]; then
-        echo "$entry was not open"
-      else
-        rc_port_write "$file" "${kept[@]}"
-        firewall_apply
-        echo "closed $entry"
-      fi
-      ;;
-    list)
-      [ "$#" -eq 0 ] || rc_usage
-      printf '%s\n' 22/tcp 80/tcp 443/tcp
-      fw_open_ports "$file"
-      ;;
+    open | close) [ "$#" -eq 1 ] || rc_usage ;;
+    list) [ "$#" -eq 0 ] || rc_usage ;;
     *) rc_usage ;;
   esac
+  file="$(p /etc/vps-apps/open-ports)"
+
+  if [ "$action" = list ]; then
+    printf '%s\n' 22/tcp 80/tcp 443/tcp
+    fw_open_ports "$file"
+    return 0
+  fi
+
+  entry="$(rc_port_parse "$1")"
+  case "$action:$entry" in
+    open:22/tcp | open:80/tcp | open:443/tcp)
+      echo "$entry is always open"
+      return 0
+      ;;
+    close:22/tcp)
+      echo "rc port: 22/tcp carries SSH, SSH stays open" >&2
+      exit 2
+      ;;
+    close:80/tcp | close:443/tcp)
+      echo "rc port: 80 and 443 carry the proxy and stay open" >&2
+      exit 2
+      ;;
+  esac
+
+  fw_lock
+  fw_open_ports "$file" >/dev/null || exit 1
+  mapfile -t current < <(fw_open_ports "$file")
+  have=no
+  kept=()
+  for e in "${current[@]}"; do
+    if [ "$e" = "$entry" ]; then
+      have=yes
+    else
+      kept+=("$e")
+    fi
+  done
+  if [ "$action" = open ]; then
+    if [ "$have" = yes ]; then
+      # Already listed: apply the current list again, which repairs a half-applied state.
+      rc_port_apply "$file" "${current[@]}"
+      echo "$entry is already open"
+    else
+      rc_port_apply "$file" "${current[@]}" "$entry"
+      echo "opened $entry"
+    fi
+  elif [ "$have" = no ]; then
+    echo "$entry was not open"
+  else
+    rc_port_apply "$file" "${kept[@]}"
+    echo "closed $entry"
+  fi
 }
