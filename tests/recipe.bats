@@ -19,7 +19,6 @@ run_recipe() {
   body="${body%x}"
   body="${body//'{{root_pass}}'/"$pw"}"
   body="${body//'{{vps_hostname}}'/"${HOSTVAL:-h1.example.com}"}"
-  if [ -z "${KEEP_IPS:-}" ]; then body="${body//'{{ips}}'/85.121.120.207}"; fi
   printf '%s' "$body" >"$BATS_TEST_TMPDIR/recipe.sh"
   sh "$BATS_TEST_TMPDIR/recipe.sh" >"$BATS_TEST_TMPDIR/recipe.out" 2>&1
 }
@@ -64,7 +63,7 @@ install_recipe() {
 }
 
 @test "VA_IP comes from the default route" {
-  KEEP_IPS=1 run_recipe 'Secret9A' --app docker
+  install_recipe
   grep -q '^VA_IP=85.121.120.207$' "$VPS_APPS_ROOT/etc/vps-apps/env"
   grep -q 'route get 1.1.1.1' "$STUB_TMP/ip.log"
 }
@@ -90,14 +89,6 @@ install_recipe() {
   [ "$status" -eq 2 ]
   run "$RENDER" --app docker --version v1.0
   [ "$status" -eq 2 ]
-}
-
-@test "the bootstrap refuses a tampered env VERSION" {
-  install_recipe
-  sed -i 's/^VERSION=.*/VERSION=main/' "$VPS_APPS_ROOT/etc/vps-apps/env"
-  run bootstrap
-  [ "$status" -ne 0 ]
-  [ ! -e "$STUB_TMP/curl.log" ]
 }
 
 @test "a successful run installs, shreds the password and disables the timer" {
@@ -254,14 +245,15 @@ assert_finished() {
   [ ! -e "$STUB_TMP/curl.log" ]
 }
 
-@test "a hostname with a newline cannot inject env lines" {
+@test "a hostname with a newline makes the env invalid: failed:args" {
   HOSTVAL=$'h2.example.com
 VERSION=main
 APP=n8n' run_recipe 'Secret9A' --app docker
   run bootstrap
-  [ "$status" -eq 0 ]
-  grep -q -- "--app docker --host h2.example.com " "$STUB_TMP/install.log"
-  grep -q "tar.gz/$SHA" "$STUB_TMP/curl.log"
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  [ "$(status_now)" = "failed:args" ]
 }
 
 @test "an uppercase hostname is lowercased before install.sh" {
@@ -296,8 +288,9 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   echo 600 >"$STUB_TMP/install_sleep"
   echo 3 >"$VPS_APPS_ROOT$STATE/attempts"
   echo $(($(date +%s) - 2698)) >"$VPS_APPS_ROOT$STATE/first-attempt"
-  run bootstrap
+  run timeout 60 bash "$VPS_APPS_ROOT/usr/local/sbin/vps-apps-bootstrap"
   [ "$status" -eq 0 ]
+  [ -s "$STUB_TMP/install.log" ]
   [ ! -e "$VPS_APPS_ROOT$pw_file" ]
   grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
   [ "$(status_now)" = "failed:timeout" ]
@@ -324,4 +317,89 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   run bootstrap
   [ "$status" -eq 0 ]
   [ "$(status_now)" = "failed:timeout" ]
+}
+
+@test "exit 137 from install.sh is a retryable timeout; on the last attempt it ends as failed:timeout" {
+  install_recipe
+  echo 137 >"$STUB_TMP/install_rc"
+  echo 29 >"$VPS_APPS_ROOT$STATE/attempts"
+  date +%s >"$VPS_APPS_ROOT$STATE/first-attempt"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ -s "$STUB_TMP/install.log" ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:timeout" ]
+}
+
+@test "a plain install.sh failure that wrote no step ends as failed:install" {
+  install_recipe
+  echo 1 >"$STUB_TMP/install_rc"
+  echo 29 >"$VPS_APPS_ROOT$STATE/attempts"
+  date +%s >"$VPS_APPS_ROOT$STATE/first-attempt"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:install" ]
+}
+
+@test "a transient failed:download does not mask a later final reason" {
+  install_recipe
+  echo 7 >"$STUB_TMP/curl_rc"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(status_now)" = "failed:download" ]
+  rm "$STUB_TMP/curl_rc"
+  echo 3 >"$STUB_TMP/install_rc"
+  run bootstrap
+  [ "$status" -eq 3 ]
+  [ "$(status_now)" = "failed:os" ]
+}
+
+@test "a failed:<step> written by install.sh is kept by a later final reason" {
+  install_recipe
+  mkdir -p "$VPS_APPS_ROOT$STATE/public/.well-known"
+  printf 'failed:docker' >"$STUB_TMP/install_status"
+  echo 1 >"$STUB_TMP/install_rc"
+  echo 29 >"$VPS_APPS_ROOT$STATE/attempts"
+  date +%s >"$VPS_APPS_ROOT$STATE/first-attempt"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(status_now)" = "failed:docker" ]
+}
+
+@test "ready is never overwritten, even by a bad env" {
+  install_recipe
+  mkdir -p "$VPS_APPS_ROOT$STATE/public/.well-known"
+  printf 'ready' >"$VPS_APPS_ROOT$STATUS"
+  sed -i 's/^VERSION=.*/VERSION=main/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(status_now)" = ready ]
+}
+
+@test "an env file with an unknown line or a repeated key is failed:args" {
+  install_recipe
+  echo 'EXTRA=1' >>"$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ "$(status_now)" = "failed:args" ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  install_recipe
+  echo 'APP=n8n' >>"$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+}
+
+@test "the password is shredded and the timer disabled even when the status cannot be written" {
+  install_recipe
+  sed -i 's/^VERSION=.*/VERSION=main/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  mkdir -p "$VPS_APPS_ROOT$STATE/public"
+  : >"$VPS_APPS_ROOT$STATE/public/.well-known"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
 }

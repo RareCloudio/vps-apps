@@ -19,6 +19,7 @@ mkdir "$work/vps-apps-x"
 cat >"$work/vps-apps-x/install.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$STUB_TMP/install.log"
+if [ -f "$STUB_TMP/install_status" ]; then printf %s "\$(cat "$STUB_TMP/install_status")" >"\$VPS_APPS_ROOT/var/lib/vps-apps/public/.well-known/rarecloud-app-status"; fi
 if [ -f "$STUB_TMP/install_sleep" ]; then exec sleep "\$(cat "$STUB_TMP/install_sleep")"; fi
 if [ -f "$STUB_TMP/install_rc" ]; then exit "\$(cat "$STUB_TMP/install_rc")"; fi
 exit 0
