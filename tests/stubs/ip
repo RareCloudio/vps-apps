@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Test stub: answers the default-route lookup the recipe uses.
+printf '%s\n' "$*" >>"${STUB_TMP:?}/ip.log"
+echo "1.1.1.1 via 85.121.120.1 dev eth0 src 85.121.120.207 uid 0"
