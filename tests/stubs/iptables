@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test stub: logs argv; "-C" (rule check) fails when STUB_TMP/fail_iptables_C exists.
+printf '%s\n' "iptables $*" >>"${STUB_TMP:?}/fw.log"
+if [[ " $* " == *" -C "* ]] && [ -e "$STUB_TMP/fail_iptables_C" ]; then exit 1; fi
+exit 0

@@ -7,14 +7,19 @@ setup() {
   # shellcheck source=../base/50-firewall.sh
   . "$BATS_TEST_DIRNAME/../base/50-firewall.sh"
   RC="$BATS_TEST_DIRNAME/../bin/rc"
-  PORTS="$(p /etc/vps-apps/open-ports)"
-  mkdir -p "$(dirname "$PORTS")"
+  DIR="$(p /etc/vps-apps)"
+  PORTS="$DIR/open-ports"
+  mkdir -p "$DIR"
   : >"$PORTS"
   FWLOG="$BATS_TEST_TMPDIR/fw.log"
+  FILES="$BATS_TEST_DIRNAME/../base/files"
 }
 
-# line_of <file> <fixed string>: the line number of the first line equal to the string.
+# line_of <file> <exact line>: the line number of the first line equal to the string.
 line_of() { grep -nxF -- "$2" "$1" | head -n1 | cut -d: -f1; }
+
+# boot_state: the three boot files plus open-ports, for before/after comparisons.
+boot_state() { cat "$DIR/vps-apps.nft" "$DIR/docker-user.v4" "$DIR/docker-user.v6" "$PORTS" 2>&1; }
 
 @test "the nft file replaces only its own table" {
   render_nft "$PORTS" >"$BATS_TEST_TMPDIR/f.nft"
@@ -33,7 +38,8 @@ line_of() { grep -nxF -- "$2" "$1" | head -n1 | cut -d: -f1; }
     "ct state established,related accept" \
     "ct state invalid drop" \
     "ip protocol icmp accept" \
-    "icmpv6 type { echo-request, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept" \
+    "icmpv6 type { echo-request, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept" \
+    "ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept" \
     "tcp dport { 22, 80, 443 } accept" \
     "tcp dport 5432 accept" \
     "udp dport 51820 accept"; do
@@ -49,7 +55,7 @@ line_of() { grep -nxF -- "$2" "$1" | head -n1 | cut -d: -f1; }
   run grep -c '@' "$BATS_TEST_TMPDIR/f.nft"
   [ "$output" = 0 ]
   run grep -c 'dport' "$BATS_TEST_TMPDIR/f.nft"
-  [ "$output" = 1 ]
+  [ "$output" = 2 ]
 }
 
 @test "the DOCKER-USER input" {
@@ -69,8 +75,53 @@ COMMIT'
   [ "$(cat "$BATS_TEST_TMPDIR/d.rules")" = "$expected" ]
 }
 
-@test "the docker-user unit" {
-  local u="$BATS_TEST_DIRNAME/../base/files/vps-apps-docker-user.service"
+@test "the open-ports validator: comments, blanks, leading zeros, range" {
+  printf '# a comment\n\n  0080/tcp  # trailing\n05432\n  51820/udp\n' >"$PORTS"
+  run fw_open_ports "$PORTS"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '80/tcp\n5432/tcp\n51820/udp')" ]
+  printf '5432/tcp\n70000/tcp\n' >"$PORTS"
+  run fw_open_ports "$PORTS"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"line 2"* ]]
+  [[ "$output" == *"70000/tcp"* ]]
+  printf '0/tcp\n' >"$PORTS"
+  run fw_open_ports "$PORTS"
+  [ "$status" -ne 0 ]
+  printf '22/sctp\n' >"$PORTS"
+  run fw_open_ports "$PORTS"
+  [ "$status" -ne 0 ]
+}
+
+@test "a malformed open-ports file refuses the apply and keeps the old rules" {
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  local v4
+  v4="$(cat "$DIR/docker-user.v4")"
+  : >"$FWLOG"
+  printf '5432/tcp\nbogus\n' >"$PORTS"
+  run firewall_apply
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"line 2"* ]]
+  run grep -c '^nft ' "$FWLOG"
+  [ "$output" = 0 ]
+  [ "$(cat "$DIR/docker-user.v4")" = "$v4" ]
+}
+
+@test "the nft unit orders itself like ufw and nftables, without a boot cycle" {
+  local u="$FILES/vps-apps-nft.service"
+  grep -qx 'DefaultDependencies=no' "$u"
+  grep -qx 'Before=network-pre.target shutdown.target' "$u"
+  grep -qx 'Conflicts=shutdown.target' "$u"
+  grep -qx 'After=local-fs.target' "$u"
+  grep -qx 'Wants=network-pre.target' "$u"
+  grep -qx 'WantedBy=sysinit.target' "$u"
+  grep -qx 'ExecStart=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft' "$u"
+  grep -qx 'RemainAfterExit=yes' "$u"
+}
+
+@test "the docker-user unit that runs after docker" {
+  local u="$FILES/vps-apps-docker-user.service"
   grep -qx 'After=docker.service' "$u"
   grep -qx 'PartOf=docker.service' "$u"
   grep -qx 'WantedBy=docker.service' "$u"
@@ -79,30 +130,49 @@ COMMIT'
   grep -q '^ExecStart=.*ip6tables-restore -n ' "$u"
 }
 
-@test "the nft unit loads the table file" {
-  grep -qx 'ExecStart=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft' "$BATS_TEST_DIRNAME/../base/files/vps-apps-nft.service"
+@test "the early docker-user unit closes the boot window before dockerd starts" {
+  local u="$FILES/vps-apps-docker-user-early.service"
+  grep -qx 'Before=docker.service' "$u"
+  grep -qx 'WantedBy=docker.service' "$u"
+  grep -qx 'RemainAfterExit=yes' "$u"
+  grep -q '^ExecStart=/usr/sbin/iptables-restore -n /etc/vps-apps/docker-user.v4' "$u"
+  grep -q '^ExecStart=.*ip6tables-restore -n ' "$u"
+  run grep -c 'After=docker.service' "$u"
+  [ "$output" = 0 ]
 }
 
 @test "base_firewall installs units and rc, applies both families and enables the units" {
   base_firewall
   [ -f "$(p /etc/systemd/system/vps-apps-nft.service)" ]
   [ -f "$(p /etc/systemd/system/vps-apps-docker-user.service)" ]
+  [ -f "$(p /etc/systemd/system/vps-apps-docker-user-early.service)" ]
   [ "$(readlink "$(p /usr/local/bin/rc)")" = /opt/vps-apps/current/bin/rc ]
   [ -e "$PORTS" ]
-  grep -qxF "nft -f $(p /etc/vps-apps/vps-apps.nft)" "$FWLOG"
-  grep -qxF "iptables-restore -n $(p /etc/vps-apps/docker-user.v4)" "$FWLOG"
-  grep -qxF "ip6tables-restore -n $(p /etc/vps-apps/docker-user.v6)" "$FWLOG"
+  [ -f "$DIR/vps-apps.nft" ]
+  grep -q '^nft -c -f ' "$FWLOG"
+  grep -q '^nft -f ' "$FWLOG"
+  grep -q '^iptables-restore -t -n ' "$FWLOG"
+  grep -q '^iptables-restore -n ' "$FWLOG"
+  grep -q '^ip6tables-restore -n ' "$FWLOG"
   grep -qxF -- '-A DOCKER-USER -i eth0 -j DROP' "$BATS_TEST_TMPDIR/ip6tables-restore.in"
-  grep -qxF "enable vps-apps-nft.service vps-apps-docker-user.service" "$BATS_TEST_TMPDIR/systemctl.log"
+  grep -qxF "enable vps-apps-nft.service vps-apps-docker-user-early.service vps-apps-docker-user.service" "$BATS_TEST_TMPDIR/systemctl.log"
 }
 
-@test "without an IPv6 default route the ip6tables part is skipped and does not fail" {
+@test "the IPv6 rules always apply, on the IPv4 interface when there is no IPv6 default route" {
   touch "$BATS_TEST_TMPDIR/ip6_none"
   base_firewall
-  grep -q '^iptables-restore ' "$FWLOG"
+  grep -q '^ip6tables-restore -n ' "$FWLOG"
+  [ -f "$DIR/docker-user.v6" ]
+  grep -qxF -- '-A DOCKER-USER -i eth0 -j DROP' "$DIR/docker-user.v6"
+}
+
+@test "the IPv6 part is skipped only when ip6tables is unavailable" {
+  fw_have() { [ "$1" != ip6tables-restore ]; }
+  base_firewall
+  grep -q '^iptables-restore -n ' "$FWLOG"
   run grep -c '^ip6tables-restore ' "$FWLOG"
   [ "$output" = 0 ]
-  [ ! -e "$(p /etc/vps-apps/docker-user.v6)" ]
+  [ ! -e "$DIR/docker-user.v6" ]
 }
 
 @test "no IPv4 default route is a clear failure" {
@@ -112,6 +182,54 @@ COMMIT'
   [[ "$output" == *"no IPv4 default route"* ]]
 }
 
+@test "a rejected validation leaves boot files and open-ports untouched" {
+  local tool before
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  "$RC" port open 5432
+  before="$(boot_state)"
+  for tool in nft iptables-restore ip6tables-restore; do
+    touch "$BATS_TEST_TMPDIR/fail_${tool}_check"
+    run "$RC" port open 6000
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"nothing changed"* ]]
+    [ "$(boot_state)" = "$before" ]
+    rm -f "$BATS_TEST_TMPDIR/fail_${tool}_check"
+  done
+  run "$RC" port open 6000
+  [ "$status" -eq 0 ]
+}
+
+@test "a failed load keeps the old boot files and open-ports" {
+  local tool before
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  "$RC" port open 5432
+  before="$(boot_state)"
+  for tool in nft iptables-restore ip6tables-restore; do
+    touch "$BATS_TEST_TMPDIR/fail_${tool}_load"
+    run "$RC" port open 6000
+    [ "$status" -ne 0 ]
+    [ "$(boot_state)" = "$before" ]
+    rm -f "$BATS_TEST_TMPDIR/fail_${tool}_load"
+  done
+}
+
+@test "a missing DOCKER-USER jump in FORWARD logs a warning and does not fail" {
+  touch "$BATS_TEST_TMPDIR/fail_iptables_C" "$BATS_TEST_TMPDIR/fail_ip6tables_C"
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  grep -qxF "iptables -C FORWARD -j DOCKER-USER" "$FWLOG"
+  grep -qxF "ip6tables -C FORWARD -j DOCKER-USER" "$FWLOG"
+  grep -q 'warning.*DOCKER-USER' "$(p /var/log/vps-apps-install.log)"
+}
+
+@test "the firewall apply is serialised with flock" {
+  run "$RC" port open 5432
+  [ "$status" -eq 0 ]
+  [ -e "$DIR/.firewall.lock" ]
+}
+
 @test "rc with no arguments or an unknown subcommand prints usage and exits 2" {
   run "$RC"
   [ "$status" -eq 2 ]
@@ -119,6 +237,23 @@ COMMIT'
   run "$RC" nonsense
   [ "$status" -eq 2 ]
   run "$RC" ../x
+  [ "$status" -eq 2 ]
+}
+
+@test "rc port usage paths exit 2 with usage" {
+  run "$RC" port
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage: rc"* ]]
+  run "$RC" port list extra
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage: rc"* ]]
+  run "$RC" port open
+  [ "$status" -eq 2 ]
+  run "$RC" port open 1 2
+  [ "$status" -eq 2 ]
+  run "$RC" port close
+  [ "$status" -eq 2 ]
+  run "$RC" port frobnicate 80
   [ "$status" -eq 2 ]
 }
 
@@ -136,23 +271,38 @@ COMMIT'
   [ "$status" -eq 0 ]
   run "$RC" port open 51820/udp
   [ "$(cat "$PORTS")" = "$(printf '5432/tcp\n51820/udp')" ]
+  run "$RC" port open 07000
+  [ "$(tail -n1 "$PORTS")" = "7000/tcp" ]
 }
 
 @test "rc port open applies the change to nft and both DOCKER-USER families at once" {
   run "$RC" port open 5432
   [ "$status" -eq 0 ]
-  grep -qxF "tcp dport 5432 accept" <(sed 's/^ *//' "$(p /etc/vps-apps/vps-apps.nft)")
-  grep -qxF "nft -f $(p /etc/vps-apps/vps-apps.nft)" "$FWLOG"
+  grep -qxF "tcp dport 5432 accept" <(sed 's/^ *//' "$DIR/vps-apps.nft")
+  grep -qxF "tcp dport 5432 accept" <(sed 's/^ *//' "$BATS_TEST_TMPDIR/nft.in")
   grep -qF -- '--ctorigdstport 5432 -j RETURN' "$BATS_TEST_TMPDIR/iptables-restore.in"
   grep -qF -- '--ctorigdstport 5432 -j RETURN' "$BATS_TEST_TMPDIR/ip6tables-restore.in"
 }
 
-@test "an already open port does not reload anything" {
+@test "an already open port is not duplicated but is applied again" {
   "$RC" port open 5432
   : >"$FWLOG"
   run "$RC" port open 5432
   [ "$status" -eq 0 ]
-  [ ! -s "$FWLOG" ]
+  [ "$(grep -c '5432' "$PORTS")" = 1 ]
+  grep -q '^nft -f ' "$FWLOG"
+}
+
+@test "rc port open of the always-open ports is a no-op with a message" {
+  local port
+  for port in 22 22/tcp 80 443/tcp; do
+    : >"$FWLOG"
+    run "$RC" port open "$port"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"always open"* ]]
+    [ ! -s "$PORTS" ]
+    [ ! -s "$FWLOG" ]
+  done
 }
 
 @test "rc port close removes the entry and reloads" {
@@ -163,19 +313,37 @@ COMMIT'
   [ "$status" -eq 0 ]
   [ "$(cat "$PORTS")" = "51820/udp" ]
   grep -q '^nft -f ' "$FWLOG"
-  run grep -c 5432 "$(p /etc/vps-apps/vps-apps.nft)"
+  run grep -c 5432 "$DIR/vps-apps.nft"
   [ "$output" = 0 ]
   run "$RC" port close 5432
   [ "$status" -eq 0 ]
 }
 
-@test "rc port close 80 and 443 refuse" {
+@test "rc port close 80/tcp and 443/tcp refuse" {
   local port
-  for port in 80 443 80/tcp 443/udp; do
+  for port in 80 443 80/tcp 443/tcp; do
     run "$RC" port close "$port"
     [ "$status" -eq 2 ]
     [[ "$output" == *"80 and 443 carry the proxy"* ]]
   done
+}
+
+@test "rc port close 22 says SSH stays open" {
+  run "$RC" port close 22
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"SSH stays open"* ]]
+}
+
+@test "the UDP twins of 80 and 443 and 22 are ordinary ports" {
+  local port
+  for port in 80/udp 443/udp 22/udp; do
+    run "$RC" port open "$port"
+    [ "$status" -eq 0 ]
+    run "$RC" port close "$port"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"closed"* ]]
+  done
+  [ ! -s "$PORTS" ]
 }
 
 @test "rc port list shows the fixed ports and the opened ones" {

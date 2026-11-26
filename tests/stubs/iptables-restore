@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Test stub: logs argv and, when the last argument is a file, its content.
+# Test stub: logs argv and the loaded file. Failure injection through files in STUB_TMP:
+# fail_iptables-restore_check (for -t) and fail_iptables-restore_load (for a real load).
 printf '%s\n' "iptables-restore $*" >>"${STUB_TMP:?}/fw.log"
 last="${!#}"
-[ -f "$last" ] && cat "$last" >>"${STUB_TMP}/iptables-restore.in"
+if [[ " $* " == *" -t "* ]]; then
+  [ -e "$STUB_TMP/fail_iptables-restore_check" ] && exit 1
+  exit 0
+fi
+[ -e "$STUB_TMP/fail_iptables-restore_load" ] && exit 1
+[ -f "$last" ] && cat "$last" >>"$STUB_TMP/iptables-restore.in"
 exit 0

@@ -1,7 +1,10 @@
 [Unit]
 Description=vps-apps host firewall (nftables table vps_apps)
+DefaultDependencies=no
 Wants=network-pre.target
-Before=network-pre.target
+Before=network-pre.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
@@ -10,4 +13,4 @@ ExecStart=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft
 ExecReload=/usr/sbin/nft -f /etc/vps-apps/vps-apps.nft
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target

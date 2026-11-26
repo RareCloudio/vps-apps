@@ -4,19 +4,48 @@
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# fw_open_ports <file>: print each valid "<port>/<tcp|udp>" line; blank lines, comments
-# and malformed lines are skipped.
+# fw_have <command>: true when the command exists (tests override it).
+fw_have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# fw_norm_entry <port>[/tcp|/udp]: print "<port>/<proto>" with leading zeros removed (tcp when
+# no protocol is given), or fail. The one validator shared by rc port and the open-ports file.
+fw_norm_entry() {
+  local port="${1%%/*}" proto=tcp
+  if [[ "$1" == */* ]]; then
+    proto="${1#*/}"
+  fi
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+  if [ "$((10#$port))" -lt 1 ] || [ "$((10#$port))" -gt 65535 ]; then
+    return 1
+  fi
+  if [ "$proto" != tcp ] && [ "$proto" != udp ]; then
+    return 1
+  fi
+  printf '%s/%s\n' "$((10#$port))" "$proto"
+}
+
+# fw_open_ports <file>: print every entry of the open-ports file as "<port>/<tcp|udp>". Blank
+# lines and # comments are skipped. A malformed line fails with a message naming it, and
+# nothing is printed, so callers never act on a half-read file.
 fw_open_ports() {
   [ -f "$1" ] || return 0
-  local line
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%%#*}"
+  local raw line entry out="" n=0
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    n=$((n + 1))
+    line="${raw%%#*}"
     line="${line//[[:space:]]/}"
-    if [[ "$line" =~ ^[0-9]{1,5}/(tcp|udp)$ ]]; then
-      printf '%s\n' "$line"
+    [ -n "$line" ] || continue
+    if ! entry="$(fw_norm_entry "$line")"; then
+      echo "firewall: $1 line $n: '$raw' is not <port>/<tcp|udp> with a port from 1 to 65535" >&2
+      return 1
     fi
+    out+="$entry"$'\n'
   done <"$1"
-  return 0
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+  fi
 }
 
 # render_nft <open-ports-file>: print the nftables file.
@@ -65,43 +94,129 @@ fw_default_if() {
   ip "$flag" route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}'
 }
 
-# firewall_apply: regenerate the rule files from open-ports and load them now. The same
-# files are what the systemd units load at boot.
-firewall_apply() {
-  local dir ports if4 if6
-  dir="$(p /etc/vps-apps)"
-  ports="$dir/open-ports"
-  mkdir -p "$dir"
-  [ -e "$ports" ] || : >"$ports"
+# fw_lock: take the firewall lock for the rest of this process (rc port and firewall_apply
+# must not interleave). Re-entrant within one process.
+fw_lock() {
+  if [ -n "${FW_LOCKED:-}" ]; then
+    return 0
+  fi
+  local lock
+  lock="$(p /etc/vps-apps/.firewall.lock)"
+  mkdir -p "$(dirname "$lock")"
+  exec 9>"$lock"
+  flock 9
+  FW_LOCKED=1
+}
+
+# fw_reload_boot_files <dir>: best effort, put the kernel back on the boot files after a
+# failed load.
+fw_reload_boot_files() {
+  local dir="$1"
+  if [ -f "$dir/vps-apps.nft" ]; then
+    nft -f "$dir/vps-apps.nft" || true
+  fi
+  if [ -f "$dir/docker-user.v4" ]; then
+    iptables-restore -n "$dir/docker-user.v4" || true
+  fi
+  if [ -f "$dir/docker-user.v6" ] && fw_have ip6tables-restore; then
+    ip6tables-restore -n "$dir/docker-user.v6" || true
+  fi
+}
+
+# fw_apply_staged <dir> <stage-dir> <ports-file>: render into the stage dir, validate every
+# layer, load, and only then move the files into place. Any failure leaves the boot files
+# and open-ports exactly as they were.
+fw_apply_staged() {
+  local dir="$1" stage="$2" ports="$3" if4 if6 v6=no
+  fw_open_ports "$ports" >/dev/null || return 1
   if4="$(fw_default_if 4)"
   if6="$(fw_default_if 6)"
   if [ -z "$if4" ]; then
     echo "firewall: no IPv4 default route, cannot pick the external interface" >&2
     return 1
   fi
-  render_nft "$ports" >"$dir/vps-apps.nft"
-  render_docker_user "$if4" "$ports" >"$dir/docker-user.v4"
-  if [ -n "$if6" ]; then
-    render_docker_user "$if6" "$ports" >"$dir/docker-user.v6"
+  # No IPv6 default route: the IPv4 interface still names the external side.
+  if [ -z "$if6" ]; then
+    if6="$if4"
+  fi
+  render_nft "$ports" >"$stage/vps-apps.nft"
+  render_docker_user "$if4" "$ports" >"$stage/docker-user.v4"
+  if fw_have ip6tables-restore; then
+    v6=yes
+    render_docker_user "$if6" "$ports" >"$stage/docker-user.v6"
+  fi
+
+  if ! nft -c -f "$stage/vps-apps.nft"; then
+    echo "firewall: nft rejected the rules, nothing changed" >&2
+    return 1
+  fi
+  if ! iptables-restore -t -n "$stage/docker-user.v4"; then
+    echo "firewall: iptables rejected the rules, nothing changed" >&2
+    return 1
+  fi
+  if [ "$v6" = yes ] && ! ip6tables-restore -t -n "$stage/docker-user.v6"; then
+    echo "firewall: ip6tables rejected the rules, nothing changed" >&2
+    return 1
+  fi
+
+  if ! nft -f "$stage/vps-apps.nft" ||
+    ! iptables-restore -n "$stage/docker-user.v4" ||
+    { [ "$v6" = yes ] && ! ip6tables-restore -n "$stage/docker-user.v6"; }; then
+    echo "firewall: loading the rules failed, reloaded the previous rules, files unchanged" >&2
+    fw_reload_boot_files "$dir"
+    return 1
+  fi
+
+  mv "$stage/vps-apps.nft" "$dir/vps-apps.nft"
+  mv "$stage/docker-user.v4" "$dir/docker-user.v4"
+  if [ "$v6" = yes ]; then
+    mv "$stage/docker-user.v6" "$dir/docker-user.v6"
   else
     rm -f "$dir/docker-user.v6"
   fi
-  nft -f "$dir/vps-apps.nft"
-  iptables-restore -n "$dir/docker-user.v4"
-  if [ -n "$if6" ]; then
-    ip6tables-restore -n "$dir/docker-user.v6"
+  chmod 0644 "$dir"/vps-apps.nft "$dir"/docker-user.v[46] 2>/dev/null || true
+  if [ "$ports" != "$dir/open-ports" ]; then
+    chmod 0644 "$ports"
+    mv "$ports" "$dir/open-ports"
   fi
+
+  # Docker adds the FORWARD jump itself; say so when it is missing, never fail on it.
+  if fw_have iptables && ! iptables -C FORWARD -j DOCKER-USER 2>/dev/null; then
+    log "warning: iptables FORWARD has no jump to DOCKER-USER, container ports are not filtered yet"
+  fi
+  if [ "$v6" = yes ] && fw_have ip6tables && ! ip6tables -C FORWARD -j DOCKER-USER 2>/dev/null; then
+    log "warning: ip6tables FORWARD has no jump to DOCKER-USER, container ports are not filtered yet"
+  fi
+  return 0
+}
+
+# firewall_apply [candidate-ports-file]: apply open-ports (or the candidate, which replaces
+# open-ports only when everything loaded).
+firewall_apply() {
+  fw_lock
+  local dir stage rc=0
+  dir="$(p /etc/vps-apps)"
+  mkdir -p "$dir"
+  if [ ! -e "$dir/open-ports" ]; then
+    : >"$dir/open-ports"
+    chmod 0644 "$dir/open-ports"
+  fi
+  stage="$(mktemp -d "$dir/.apply.XXXXXX")"
+  fw_apply_staged "$dir" "$stage" "${1:-$dir/open-ports}" || rc=$?
+  rm -rf "$stage"
+  return "$rc"
 }
 
 base_firewall() {
-  local unit_dir bin_dir
+  local unit_dir bin_dir unit
   unit_dir="$(p /etc/systemd/system)"
   bin_dir="$(p /usr/local/bin)"
   mkdir -p "$unit_dir" "$bin_dir"
-  install -m 0644 "$VA_BASE_DIR/files/vps-apps-nft.service" "$unit_dir/vps-apps-nft.service"
-  install -m 0644 "$VA_BASE_DIR/files/vps-apps-docker-user.service" "$unit_dir/vps-apps-docker-user.service"
+  for unit in vps-apps-nft vps-apps-docker-user-early vps-apps-docker-user; do
+    install -m 0644 "$VA_BASE_DIR/files/$unit.service" "$unit_dir/$unit.service"
+  done
   ln -sfn /opt/vps-apps/current/bin/rc "$bin_dir/rc"
   firewall_apply
   systemctl daemon-reload
-  systemctl enable vps-apps-nft.service vps-apps-docker-user.service
+  systemctl enable vps-apps-nft.service vps-apps-docker-user-early.service vps-apps-docker-user.service
 }

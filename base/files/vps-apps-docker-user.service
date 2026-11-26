@@ -7,7 +7,7 @@ PartOf=docker.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/iptables-restore -n /etc/vps-apps/docker-user.v4
-# The IPv6 file only exists when the VPS has an IPv6 default route.
+# The IPv6 file only exists when ip6tables is available.
 ExecStart=/bin/sh -c '[ ! -e /etc/vps-apps/docker-user.v6 ] || exec /usr/sbin/ip6tables-restore -n /etc/vps-apps/docker-user.v6'
 
 [Install]
