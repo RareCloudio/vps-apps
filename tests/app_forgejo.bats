@@ -573,8 +573,11 @@ server_pw() {
 
   # The server answers 200 but the password did not change: the login check catches it.
   : >"$F/patch_ignored"
+  : >"$F/events"
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
+  grep -qF 'the admin cannot log in with the password just set' "$(p /var/log/vps-apps-install.log)"
+  refute_grep -qF '/api/v1/users/gitadmin/tokens' "$F/events"
   rm -f "$F/patch_ignored"
 
   : >"$F/list_tokens_fail"
