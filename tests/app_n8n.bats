@@ -1070,3 +1070,20 @@ n8n_image_in() {
     grep -qxF "N8N_IMAGE_REF=$ref" "$BATS_TEST_TMPDIR/out"
   done
 }
+
+@test "an empty VALKEY_PASSWORD counts as missing: the fill puts a new secret on that line" {
+  for empty in 'VALKEY_PASSWORD=' 'VALKEY_PASSWORD=""' "VALKEY_PASSWORD=''"; do
+    old_env
+    printf '%s\nTZ=UTC\n' "$empty" >>"$DATA/.env"
+    n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+    [ "$(grep -c '^VALKEY_PASSWORD=' "$BATS_TEST_TMPDIR/out")" -eq 1 ]
+    [[ "$(sed -n 15p "$BATS_TEST_TMPDIR/out")" =~ ^VALKEY_PASSWORD=[0-9a-f]{64}$ ]]
+    [ "$(sed -n 16p "$BATS_TEST_TMPDIR/out")" = TZ=UTC ]
+  done
+  # A value that is set stays as it is, whatever it looks like.
+  old_env
+  printf 'VALKEY_PASSWORD=x\n' >>"$DATA/.env"
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  grep -qxF VALKEY_PASSWORD=x "$BATS_TEST_TMPDIR/out"
+  [ "$(grep -c '^VALKEY_PASSWORD=' "$BATS_TEST_TMPDIR/out")" -eq 1 ]
+}
