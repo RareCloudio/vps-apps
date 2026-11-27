@@ -196,12 +196,34 @@ status_block() {
 @test "base_proxy checks that the proxy serves the status on port 80 before it succeeds" {
   printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
   base_proxy
-  grep -qxF -- '-fsS --retry 15 --retry-connrefused --retry-delay 2 http://127.0.0.1/.well-known/rarecloud-app-status' "$STUB_TMP/curl.log"
+  grep -qxF -- '-fsS -o /dev/null --max-time 5 http://127.0.0.1/.well-known/rarecloud-app-status' "$STUB_TMP/curl.log"
 }
 
-@test "base_proxy fails when the proxy never serves" {
+@test "base_proxy fails when the proxy never serves, after a bounded number of tries" {
   printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
   echo 7 >"$STUB_TMP/curl_rc"
-  run base_proxy
+  VA_PROXY_TRIES=4 VA_PROXY_INTERVAL=0 run base_proxy
   [ "$status" -ne 0 ]
+  [ "$(grep -c 'rarecloud-app-status' "$STUB_TMP/curl.log")" -eq 4 ]
+  grep -q 'proxy: nothing answers on port 80' "$(p /var/log/vps-apps-install.log)"
+}
+
+# Live on both dev VPS: docker-proxy accepts the connection before Caddy has its config, and curl
+# exits 52 (empty reply), which curl's own --retry does not retry.
+@test "base_proxy retries an empty reply (curl exit 52) until the proxy serves" {
+  printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
+  echo 3 >"$BATS_TEST_TMPDIR/empty_replies"
+  curl() {
+    local n
+    printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/curl_calls"
+    n="$(cat "$BATS_TEST_TMPDIR/empty_replies")"
+    if [ "$n" -gt 0 ]; then
+      echo $((n - 1)) >"$BATS_TEST_TMPDIR/empty_replies"
+      return 52
+    fi
+  }
+  VA_PROXY_INTERVAL=0 run base_proxy
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'rarecloud-app-status' "$BATS_TEST_TMPDIR/curl_calls")" -eq 4 ]
+  [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = installing ]
 }
