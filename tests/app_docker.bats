@@ -20,7 +20,7 @@ set -euo pipefail
 . "\${INSTALL_SH:-$ROOT_DIR/install.sh}"
 load_code() {
   local f
-  for f in packages swap sysctl docker firewall proxy ssh motd; do
+  for f in network packages swap sysctl docker firewall proxy ssh motd; do
     eval "base_\$f() { echo \$f >>\"$CALLS\"; }"
   done
   app_prepare() { echo app_prepare >>"$CALLS"; }
@@ -49,7 +49,7 @@ run_driver() {
 @test "install.sh --app docker runs every step in order" {
   run_driver
   [ "$status" -eq 0 ]
-  [ "$(tr '\n' ' ' <"$CALLS")" = "packages swap sysctl docker firewall proxy ssh motd app_prepare app_up_setup app_create_admin app_expose ready_check status=installing " ]
+  [ "$(tr '\n' ' ' <"$CALLS")" = "network packages swap sysctl docker firewall proxy ssh motd app_prepare app_up_setup app_create_admin app_expose ready_check status=installing " ]
   [ "$(cat "$STATUS_FILE")" = ready ]
 }
 
@@ -307,7 +307,7 @@ set -euo pipefail
 . "$ROOT_DIR/install.sh"
 VA_APP=docker
 load_code
-for fn in base_packages base_swap base_sysctl base_docker base_firewall base_proxy base_ssh base_motd \\
+for fn in base_network base_packages base_swap base_sysctl base_docker base_firewall base_proxy base_ssh base_motd \\
   app_prepare app_up_setup app_create_admin app_expose app_ready_check app_compose_files app_domain_added \\
   step_app_create_admin wait_until_ready set_status run_step set_site_mode compose_run; do
   declare -F "\$fn" >/dev/null || { echo "missing \$fn"; exit 1; }
@@ -315,7 +315,7 @@ done
 for s in "\${VA_STEPS[@]}"; do
   declare -F "\${s#*:}" >/dev/null || { echo "missing step function \$s"; exit 1; }
 done
-[ "\${#VA_STEPS[@]}" -eq 12 ]
+[ "\${#VA_STEPS[@]}" -eq 13 ]
 RS
   run bash "$BATS_TEST_TMPDIR/real.sh"
   [ "$status" -eq 0 ]
