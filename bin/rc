@@ -36,7 +36,7 @@ rc_load_env() {
     echo "rc: $(p /etc/vps-apps/app.env) is missing, no app is installed on this server" >&2
     exit 1
   fi
-  case "$VA_APP" in docker | n8n) ;; *)
+  case "$VA_APP" in docker | n8n | nextcloud | forgejo | wordpress | uptimekuma) ;; *)
     echo "rc: $VA_ENV_FILE has no valid APP" >&2
     exit 1
     ;;

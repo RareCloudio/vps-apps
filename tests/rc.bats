@@ -482,6 +482,43 @@ APP
   [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }
 
+@test "rc refuses an APP it does not know" {
+  printf 'APP=foo\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
+  run "$RC" status
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"has no valid APP"* ]]
+}
+
+# loads_app <app>: with app.env naming <app>, rc loads that app's own installed hooks (a stub that
+# logs its name) and rc domain add reaches its app_domain_added.
+loads_app() {
+  local dir
+  dir="$(p "/opt/vps-apps/current/apps/$1")"
+  mkdir -p "$dir" "$(p "/opt/vps-apps-data/$1")"
+  printf 'app_compose_files() { printf "%%s\\n" "%s/compose.yml"; }\n' "$dir" >"$dir/app.sh"
+  printf 'app_domain_added() { printf "%%s %%s\\n" %s "$1" >>"$STUB_TMP/hook.log"; }\n' "$1" >>"$dir/app.sh"
+  printf 'APP=%s\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n' "$1" >"$ETC/app.env"
+  run "$RC" domain add shop.example.com
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STUB_TMP/hook.log")" = "$1 shop.example.com" ]
+}
+
+@test "rc takes APP=nextcloud and loads its hooks" {
+  loads_app nextcloud
+}
+
+@test "rc takes APP=forgejo and loads its hooks" {
+  loads_app forgejo
+}
+
+@test "rc takes APP=wordpress and loads its hooks" {
+  loads_app wordpress
+}
+
+@test "rc takes APP=uptimekuma and loads its hooks" {
+  loads_app uptimekuma
+}
+
 @test "the motd reads the host from app.env, and from the bootstrap's env file without it" {
   rm "$ETC/env"
   printf 'APP=n8n\nMODE=\nVA_HOST=other.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
