@@ -137,6 +137,41 @@ APP
   refute_grep -q ' pull$' "$STUB_TMP/docker.log"
 }
 
+@test "rc update lets the app write its own .env through app_update_env when it has one" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  chmod 600 "$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_update_env() {
+  printf '%s|%s\n' "$1" "$2" >>"$STUB_TMP/hook.log"
+  resolve_env_images "$1" "$2" && echo ADDED_BY_APP=1 >>"$2"
+}
+APP
+  run "$RC" update
+  [ "$status" -eq 0 ]
+  grep -qxF ADDED_BY_APP=1 "$DATA/.env"
+  grep -qE '^N8N_IMAGE=app/a@sha256:[0-9a-f]{64}$' "$DATA/.env"
+  [ "$(stat -c %a "$DATA/.env")" = 600 ]
+  grep -qF "$DATA/.env|" "$STUB_TMP/hook.log"
+  refute_grep -qF "$ZEROS" "$PROXY/.env"
+  grep -qE "^compose -f .*/n8n/compose\.yml .* up -d$" "$STUB_TMP/docker.log"
+}
+
+@test "rc update changes nothing and pulls nothing when the app's app_update_env fails" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  cp "$PROXY/.env" "$BATS_TEST_TMPDIR/proxy.env"
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_update_env() { echo half >"$2"; return 1; }
+APP
+  run "$RC" update
+  [ "$status" -ne 0 ]
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  cmp "$PROXY/.env" "$BATS_TEST_TMPDIR/proxy.env"
+  refute_grep -q ' pull$' "$STUB_TMP/docker.log"
+}
+
 @test "refresh_image_digests appends a missing image line and leaves other lines alone" {
   printf 'A=1\nB_IMAGE_REF=repo/b:2\n' >"$BATS_TEST_TMPDIR/e.env"
   refresh_image_digests "$BATS_TEST_TMPDIR/e.env"

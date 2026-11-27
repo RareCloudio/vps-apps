@@ -51,6 +51,7 @@ rc_load_env() {
 #   app_compose_files        print the absolute path of each compose file, one per line
 #   app_domain_added <host>  apply /etc/vps-apps/domains (this host was just added)
 #   app_domain_check <host>  optional: print why and return 1 when the app takes no extra domain
+#   app_update_env <env> <out>  optional: write what rc update makes of the app .env (rc.d/update.sh)
 rc_load_app() {
   local app_sh
   rc_load_env
