@@ -642,7 +642,8 @@ env_get() {
   echo 999 >"$G/ready_fail"
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
-  grep -qF -- '--max-time 30' "$CURL_ARGV"
+  # Each attempt is bounded too (curl records one argument per line).
+  grep -A1 -xF -- '--max-time' "$CURL_ARGV" | grep -qx 30
   rm -f "$G/ready_fail"
   : >"$G/db_failing"
   run app_create_admin "$PWF"
@@ -666,6 +667,11 @@ env_get() {
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
   [ "$(cat "$G/pw")" = admin ]
+  # An exit 0 without the success message is a failure even when the login would work: this run
+  # did not set the password.
+  printf '%s' Secret123 >"$G/pw"
+  run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
 }
 
 @test "the login check stops a password that did not take" {
