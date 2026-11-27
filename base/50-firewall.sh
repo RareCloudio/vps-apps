@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 5: host firewall (own nftables table) plus DOCKER-USER rules for container ports.
+# Base step 6: host firewall (own nftables table) plus DOCKER-USER rules for container ports.
 # Sourced, never executed; bin/rc sources it too for the render and apply helpers.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

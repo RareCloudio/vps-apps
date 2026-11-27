@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 7: SSH policy and the fail2ban sshd jail. Sourced after lib/common.sh, never executed.
+# Base step 8: SSH policy and the fail2ban sshd jail. Sourced after lib/common.sh, never executed.
 
 # ssh_usable_key <authorized_keys>: 0 only when sshd will really accept a plain key from the file,
 # so that turning password login off cannot lock the customer out. Otherwise 1, with the reason in

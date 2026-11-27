@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 1: packages, automatic security updates and time sync. Sourced, never executed.
+# Base step 2: packages, automatic security updates and time sync. Sourced, never executed.
 
 base_packages() {
   apt_safe update

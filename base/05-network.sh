@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The first base step, before packages: an IPv6 default route that works. Sourced after
+# Base step 1, before packages: an IPv6 default route that works. Sourced after
 # lib/common.sh, never executed.
 #
 # A KVM VPS from the Virtualizor panel gets a netplan file whose IPv6 gateway lies outside the VPS's

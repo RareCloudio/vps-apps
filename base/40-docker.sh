@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 4: Docker from Docker's apt repo, a daemon config and a weekly prune. Sourced, never executed.
+# Base step 5: Docker from Docker's apt repo, a daemon config and a weekly prune. Sourced, never executed.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

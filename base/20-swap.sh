@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 2: a swap file sized from RAM. Sourced, never executed.
+# Base step 3: a swap file sized from RAM. Sourced, never executed.
 
 # swap_size_gib <MemTotal in kB>: RAM rounded up to whole GiB (a "1 GiB" VPS reports
 # slightly less), then up to 2 GiB swap equals RAM, above that half of it, capped at 4.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 8: the login message. Sourced after lib/common.sh, never executed.
+# Base step 9: the login message. Sourced after lib/common.sh, never executed.
 
 VA_MOTD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/files/99-vps-apps-motd"
 
