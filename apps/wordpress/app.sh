@@ -153,16 +153,18 @@ wp_admin_email() {
 # wp_log_error <what> <stderr-file> [<password-file>]: one log line with the end of the error output
 # (WP-CLI's own message comes last, after compose's lines). The install log is world-readable, so
 # PHP stack-trace lines are dropped: PHP prints call arguments there (the image does not set
-# zend.exception_ignore_args), and the password is one of them. The exact password is masked too.
+# zend.exception_ignore_args), and the password is one of them. The exact password is masked too,
+# before the output is cut to its last 400 bytes: cut first, a password across the cut would keep
+# its tail.
 wp_log_error() {
   local msg pw
   msg="$({ grep -vE '^[[:space:]]*(PHP[[:space:]]+)?(#[0-9]+[[:space:]]|Stack trace:|thrown in )' "$2" || true; } |
-    tail -c 400 | tr '\n' ' ')"
+    tr '\n' ' ')"
   if [ -n "${3:-}" ]; then
     pw="$(cat "$3")"
     [ -z "$pw" ] || msg="${msg//"$pw"/<password>}"
   fi
-  log "wordpress: $1: $msg"
+  log "wordpress: $1: $(printf '%s' "$msg" | tail -c 400)"
 }
 
 # app_create_admin <password-file>: install WordPress with WP-CLI on the loopback stack, which

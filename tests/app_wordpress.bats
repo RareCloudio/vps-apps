@@ -493,6 +493,31 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
   grep -qF 'the password itself: <password>' "$(p /var/log/vps-apps-install.log)"
 }
 
+@test "the error output is masked before it is cut: a password across the 400-byte cut leaks no part" {
+  pw='Zq9UniqueSecret'
+  printf '%s' "$pw" >"$PWF"
+  # 390 bytes and the newline after the password: its last 9 bytes are inside the last 400.
+  printf 'Error: rejected %s%s\n' "$pw" "$(printf 'y%.0s' $(seq 390))" >"$BATS_TEST_TMPDIR/err"
+  wp_log_error "wp core install failed" "$BATS_TEST_TMPDIR/err" "$PWF"
+  logf="$(p /var/log/vps-apps-install.log)"
+  grep -qF 'wordpress: wp core install failed: ' "$logf"
+  grep -qF 'yyyy' "$logf"
+  for i in $(seq 0 $((${#pw} - 4))); do
+    refute_grep -qF "${pw:$i:4}" "$logf"
+  done
+  # Still the end of the output, at most 400 bytes of it.
+  msg="$(sed -n 's/^.* wordpress: wp core install failed: //p' "$logf")"
+  [ "${#msg}" -le 400 ]
+  [[ "$msg" == *y ]] || [[ "$msg" == *"y " ]]
+}
+
+@test "a short error output is logged whole, with the password masked" {
+  printf '%s' 'Zq9UniqueSecret' >"$PWF"
+  printf 'Error: rejected Zq9UniqueSecret\n' >"$BATS_TEST_TMPDIR/err"
+  wp_log_error "wp core install failed" "$BATS_TEST_TMPDIR/err" "$PWF"
+  grep -qF 'wordpress: wp core install failed: Error: rejected <password>' "$(p /var/log/vps-apps-install.log)"
+}
+
 @test "a failing wp core install fails the step, and nothing after it runs" {
   app_prepare
   stub_docker
