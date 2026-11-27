@@ -397,12 +397,17 @@ n8n_hold_major() {
 # lacks, so a server installed from an earlier release gets the settings added since (app_prepare
 # never rewrites an existing .env). A missing key gets its value from the template when that value
 # is a constant, and VALKEY_PASSWORD a new secret as at install. A value the install derived (the
-# database password, the encryption key, the URLs, the images) is never made up here.
+# database password, the encryption key, the URLs, the images) is never made up here. The one line
+# it changes is the image tag the previous release installed with, latest, which becomes stable
+# (VA_N8N_IMAGE_REF); a tag set by hand stays.
 n8n_fill_env() {
   local line valkey_pw=""
   local -a lines=()
   local -A have=()
   while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:latest" ]; then
+      line="N8N_IMAGE_REF=$VA_N8N_IMAGE_REF"
+    fi
     lines+=("$line")
     if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
       have["${BASH_REMATCH[1]}"]=1
