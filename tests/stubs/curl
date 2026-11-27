@@ -2,6 +2,8 @@
 # Test stub: logs argv. Exits with the code in $STUB_TMP/curl_rc when that file exists.
 # Otherwise writes (to the -o target) a tarball with one top-level directory holding a
 # fake install.sh that logs its argv and exits with the code in $STUB_TMP/install_rc.
+# Called as `install.sh --site-failed`, the fake only logs and exits with the code in
+# $STUB_TMP/site_failed_rc (0 without it), like the quick real entry point.
 set -eu
 printf '%s\n' "$*" >>"$STUB_TMP/curl.log"
 if [ -f "$STUB_TMP/curl_rc" ]; then
@@ -20,6 +22,7 @@ mkdir "$work/vps-apps-x"
 cat >"$work/vps-apps-x/install.sh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >>"$STUB_TMP/install.log"
+if [ "\${1:-}" = --site-failed ]; then exit "\$(cat "$STUB_TMP/site_failed_rc" 2>/dev/null || echo 0)"; fi
 if [ -f "$STUB_TMP/install_status" ]; then printf %s "\$(cat "$STUB_TMP/install_status")" >"\$VPS_APPS_ROOT/var/lib/vps-apps/public/.well-known/rarecloud-app-status"; fi
 if [ -f "$STUB_TMP/install_sleep" ]; then exec sleep "\$(cat "$STUB_TMP/install_sleep")"; fi
 if [ -f "$STUB_TMP/install_rc" ]; then exit "\$(cat "$STUB_TMP/install_rc")"; fi

@@ -240,6 +240,48 @@ code_copy() {
   readlink -e "$opt/current/install.sh"
 }
 
+# site_at <mode>: an install that got as far as this site mode, with the app.env it recorded.
+site_at() {
+  mkdir -p "$VPS_APPS_ROOT/etc/vps-apps" "$VPS_APPS_ROOT/var/lib/vps-apps"
+  printf 'APP=docker\nMODE=\nVA_HOST=a.example.com\nVA_IP=1.2.3.4\n' >"$VPS_APPS_ROOT/etc/vps-apps/app.env"
+  printf '%s' "$1" >"$VPS_APPS_ROOT/var/lib/vps-apps/site-mode"
+}
+
+@test "install.sh --site-failed shows the failed page while the site is installing or http-only" {
+  local mode caddy="$VPS_APPS_ROOT/etc/vps-apps/caddy/Caddyfile"
+  for mode in installing http-only; do
+    site_at "$mode"
+    run bash "$ROOT_DIR/install.sh" --site-failed
+    [ "$status" -eq 0 ]
+    [ "$(cat "$VPS_APPS_ROOT/var/lib/vps-apps/site-mode")" = failed ]
+    grep -qxF 'a.example.com {' "$caddy"
+    grep -qF 'rewrite * /failed.html' "$caddy"
+  done
+}
+
+@test "install.sh --site-failed leaves a server in app mode, or with no site yet, alone" {
+  local caddy="$VPS_APPS_ROOT/etc/vps-apps/caddy/Caddyfile"
+  site_at app
+  mkdir -p "$(dirname "$caddy")"
+  printf 'the app labels own the site' >"$caddy"
+  run bash "$ROOT_DIR/install.sh" --site-failed
+  [ "$status" -eq 0 ]
+  [ "$(cat "$VPS_APPS_ROOT/var/lib/vps-apps/site-mode")" = app ]
+  [ "$(cat "$caddy")" = 'the app labels own the site' ]
+  rm "$VPS_APPS_ROOT/var/lib/vps-apps/site-mode" "$caddy"
+  run bash "$ROOT_DIR/install.sh" --site-failed
+  [ "$status" -eq 0 ]
+  [ ! -e "$caddy" ]
+  [ ! -e "$VPS_APPS_ROOT/var/lib/vps-apps/site-mode" ]
+}
+
+@test "install.sh --site-failed takes no other argument" {
+  site_at installing
+  run bash "$ROOT_DIR/install.sh" --site-failed --app docker
+  [ "$status" -eq 2 ]
+  [ "$(cat "$VPS_APPS_ROOT/var/lib/vps-apps/site-mode")" = installing ]
+}
+
 @test "a library that fails to load exits 1 (retryable), not 2" {
   copy="$BATS_TEST_TMPDIR/copy"
   mkdir -p "$copy"

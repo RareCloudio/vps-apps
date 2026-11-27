@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Turns a fresh Ubuntu 24.04 VPS into a Docker or n8n server.
 # Usage: install.sh --app <docker|n8n> --host <fqdn> --ip <ipv4> --password-file <path> [--mode starter|pro]
+#        install.sh --site-failed   (the bootstrap, after its last attempt: see site_failed)
 # Exit codes: 0 done, 1 a failed step (retryable), 2 bad arguments, 3 the wrong OS.
 set -euo pipefail
 
@@ -205,9 +206,35 @@ already_ready() {
   done
 }
 
+# site_failed: the --site-failed entry point. The bootstrap calls it when its budget is spent or an
+# attempt ended for good, so the HTTPS page says the install failed instead of "being set up"
+# forever. Only an installing page is replaced (site mode installing or http-only); a server in app
+# mode, or with no site yet, is left alone. The host comes from app.env.
+site_failed() {
+  local mode="" f
+  f="$(p /var/lib/vps-apps/site-mode)"
+  [ ! -r "$f" ] || mode="$(cat "$f")"
+  case "$mode" in
+    installing | http-only) ;;
+    *) return 0 ;;
+  esac
+  if ! read_app_env || ! valid_hostname "$VA_HOST"; then
+    echo "install.sh: no valid host in $(p /etc/vps-apps/app.env), the page stays as it is" >&2
+    return 1
+  fi
+  # shellcheck source=base/60-proxy.sh
+  . "$VA_ROOT/base/60-proxy.sh"
+  set_site_mode failed
+}
+
 main() {
   local s
   require_root
+  if [ "${1:-}" = --site-failed ]; then
+    [ "$#" -eq 1 ] || usage_error "--site-failed takes no other argument"
+    site_failed
+    return
+  fi
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
