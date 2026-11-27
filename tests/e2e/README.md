@@ -54,7 +54,7 @@ of seconds, not two minutes.
 | 1 | install | the rendered recipe runs as root with the nasty password; the timer is armed; the password file is byte-exact |
 | 2 | status | `/.well-known/rarecloud-app-status` reads `installing`, then `ready` |
 | 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate |
-| 4 | n8n | login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
+| 4 | n8n | n8n and its workers have `GENERIC_TIMEZONE=UTC` and `TZ=UTC`; in pro mode, Valkey answers `NOAUTH` without its password and `PONG` with it, and the password is on no command line in `ps`; login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
 | 5 | docker | whoami over HTTPS; postgres on 5432 closed, `rc port open`, restarts of docker and `vps-apps-nft`, `rc port close`, on IPv4 and IPv6 (docker only). Port 22 is probed first as a positive control |
 | 6 | resume | install killed after `app_up_setup`, the timer resumes it, same `.env` checksum (fresh OS only) |
 | 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving |
@@ -68,6 +68,9 @@ of seconds, not two minutes.
 Default checks: docker `1 2 3 5 7 8 9 10 11 12 13`, n8n `1 2 3 4 7 8 9 10 11 12 13`. Check 6 installs by
 itself, so it is never a default and cannot be combined with check 1. Checks run in this order whatever
 the order of `--checks`: 1 6 2 3 4 5 7 8 10 12 13 9 11.
+
+Check 4 runs `rc update` while n8n's `stable` tag is on the major version the VPS runs. Holding n8n on that
+major when `stable` moves to a new one is covered by the bats tests only.
 
 Check 13 derives the expected `PasswordAuthentication` from the VPS: `no` when `authorized_keys` holds a
 usable plain key (the installer's rule), else `yes`. A VPS that carries only the test key therefore expects

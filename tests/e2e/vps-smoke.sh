@@ -27,7 +27,7 @@ checks:
    1 install        render the recipe, substitute the Virtualizor tokens, run it as root
    2 status         /.well-known/rarecloud-app-status reads installing, then ready
    3 https          https://<ip-dashed>.sslip.io/ answers with a valid certificate
-   4 n8n            login, workflow run, password change, reboot, rc update (n8n only)
+   4 n8n            UTC, Valkey password (pro), login, workflow run, password change, reboot, rc update (n8n only)
    5 docker         whoami over HTTPS, postgres closed/open/closed, IPv4 + IPv6 (docker only)
    6 resume         kill the install after app_up_setup, the timer resumes it (needs a fresh OS)
    7 domain         rc domain add app.<ip-dashed>.sslip.io serves the app on that name too
@@ -464,7 +464,7 @@ reboot_vps() {
 }
 
 check_4_n8n() {
-  local wf_id wf_path key newpw="$TMP/newpw" oldpw="$TMP/oldpw" wfjson="$TMP/wf.json"
+  local wf_id wf_path key n_all n_utc newpw="$TMP/newpw" oldpw="$TMP/oldpw" wfjson="$TMP/wf.json"
   [ "$APP" = n8n ] || { fail "needs --app n8n"; return 1; }
   ensure_ready || return 1
   : >"$JAR"
@@ -485,6 +485,46 @@ echo "workers=$w valkey=$v"
 EOF
     )" || { fail "cannot inspect the containers"; return 1; }
     [ "$r" = "workers=2 valkey=1" ] || { fail "pro mode expects 2 workers and 1 valkey, found: $r"; return 1; }
+
+    say "n8n: Valkey refuses a client without its password, and the password is on no command line"
+    r="$(vscript <<'EOF'
+c="$(docker ps -q --filter label=com.docker.compose.service=valkey | head -n1)"
+[ -n "$c" ] || { echo "no valkey container"; exit 0; }
+anon="$(docker exec "$c" valkey-cli ping 2>&1)"
+case "$anon" in *NOAUTH*) anon=NOAUTH ;; esac
+auth="$(docker exec "$c" sh -c 'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping' 2>&1)"
+t="$(mktemp -d)"
+sed -n 's/^VALKEY_PASSWORD=//p' /opt/vps-apps-data/n8n/.env >"$t/pw"
+ps -eo args >"$t/ps"
+seen="$(grep -cF -f "$t/pw" "$t/ps")"
+[ -s "$t/pw" ] || seen=no-password
+rm -rf "$t"
+echo "anon=$anon auth=$auth seen=$seen"
+EOF
+    )" || { fail "cannot check Valkey"; return 1; }
+    [ "$r" = "anon=NOAUTH auth=PONG seen=0" ] || { fail "Valkey: expected anon=NOAUTH auth=PONG seen=0, found: $r"; return 1; }
+  fi
+
+  say "n8n: n8n and its workers run on UTC"
+  r="$(vscript <<'EOF'
+n=0; utc=0
+for c in $(docker ps -q); do
+  s="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$c")"
+  case "$s" in
+    n8n | n8n-worker)
+      n=$((n+1))
+      k="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" | grep -cxE 'GENERIC_TIMEZONE=UTC|TZ=UTC')"
+      [ "$k" != 2 ] || utc=$((utc+1))
+      ;;
+  esac
+done
+echo "$n $utc"
+EOF
+  )" || { fail "cannot inspect the containers"; return 1; }
+  read -r n_all n_utc <<<"$r"
+  if ! [[ "${n_all:-}" =~ ^[0-9]+$ ]] || [ "$n_all" -lt 1 ] || [ "$n_all" != "${n_utc:-}" ]; then
+    fail "expected every n8n container on GENERIC_TIMEZONE=UTC and TZ=UTC, found $r (containers, on UTC)"
+    return 1
   fi
 
   say "n8n: create an API key and a webhook workflow"
