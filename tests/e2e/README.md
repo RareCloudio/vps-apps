@@ -71,7 +71,7 @@ of seconds, not two minutes.
 | 13 | ssh | checks the configuration only: sshd listens on 22, `PasswordAuthentication` and `PermitRootLogin` match the keys in `authorized_keys`, the test key is still there (it does not try a password login) |
 | 14 | nextcloud | a WebDAV `PROPFIND` on `/remote.php/dav/files/admin/` as `admin` answers 207, and 401 with a wrong password (nextcloud only) |
 | 15 | forgejo | `GET /api/v1/user` as `gitadmin` names the site admin `gitadmin`; `/user/sign_up` says "Registration is disabled"; `ssh-keyscan -p 2222` gets a host key (forgejo only) |
-| 16 | wordpress | a `wp-login.php` login as `admin` gives a 302 to `/wp-admin/` and a `wordpress_logged_in_` cookie; `/wp-admin/install.php` says "Already Installed"; `?action=register` redirects to `registration=disabled` (wordpress only) |
+| 16 | wordpress | a `wp-login.php` login as `admin` gives a 302 to `/wp-admin/` and a `wordpress_logged_in_` cookie; `/wp-admin/install.php` says "Already Installed"; `?action=register` redirects to `registration=disabled`; a POST to `/xmlrpc.php` and `/xmlrpc.php/x` answers 403 (wordpress only) |
 | 17 | uptimekuma | `admin.js` run in the app container over `https://<ip-dashed>.sslip.io`: `need-setup` prints `false` and `login` as `admin` succeeds (uptimekuma only) |
 
 The health page of check 3 and check 7: Nextcloud `/status.php` with `installed` true, Forgejo

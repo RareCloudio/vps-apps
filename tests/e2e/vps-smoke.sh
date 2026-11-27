@@ -42,7 +42,7 @@ checks:
   13 ssh            sshd on 22, password login and authorized_keys as the VPS shows them
   14 nextcloud      WebDAV as admin answers 207, a wrong password 401 (nextcloud only)
   15 forgejo        API login as gitadmin, sign-up closed, git SSH on 2222 (forgejo only)
-  16 wordpress      wp-login.php as admin, installer closed, registration off (wordpress only)
+  16 wordpress      wp-login.php as admin, installer closed, registration off, xmlrpc.php 403 (wordpress only)
   17 uptimekuma     setup no longer offered, admin logs in through the proxy (uptimekuma only)
 Default checks: docker 1 2 3 5 7 8 9 10 11 12 13; n8n 1 2 3 4 7 8 9 10 11 12 13; nextcloud,
 forgejo, wordpress and uptimekuma 1 2 3, their own check (14 to 17), then 7 8 9 10 11 12 13.
@@ -1189,7 +1189,7 @@ check_15_forgejo() {
 }
 
 check_16_wordpress() {
-  local pwf="$TMP/app.pw" hdrs="$TMP/wp.headers" out
+  local pwf="$TMP/app.pw" hdrs="$TMP/wp.headers" out path
   [ "$APP" = wordpress ] || { fail "needs --app wordpress"; return 1; }
   ensure_ready || return 1
   app_pw_file "$pwf"
@@ -1212,6 +1212,14 @@ check_16_wordpress() {
     "https://$HOST/wp-login.php?action=register" 2>/dev/null)" || out=""
   [[ "$out" == 30[0-9]" "*"registration=disabled"* ]] ||
     { fail "/wp-login.php?action=register answered '$out', expected a redirect to registration=disabled"; return 1; }
+  # WordPress itself would answer an XML-RPC call with 200; the proxy refuses the path and below it.
+  say "wordpress: xmlrpc.php is refused with 403"
+  for path in /xmlrpc.php /xmlrpc.php/x; do
+    out="$(curl_t -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: text/xml' \
+      --data '<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName></methodCall>' \
+      "https://$HOST$path" 2>/dev/null)" || out=""
+    [ "$out" = 403 ] || { fail "POST $path answered HTTP '$out', expected 403"; return 1; }
+  done
 }
 
 # uk_cmd <mode>: the remote command that runs apps/uptimekuma/admin.js <mode> https://<host> with the
