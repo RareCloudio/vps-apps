@@ -7,10 +7,20 @@
 # registry serves, STUB_TMP/local_images one "<64 hex>" line per image on the server. "image inspect
 # ... <repo@sha256:hex>" prints the label of an image on the server and fails for any other;
 # "pull [-q] <repo@sha256:hex>" puts an image the registry serves on the server and fails otherwise.
+# "buildx imagetools inspect <repo@sha256:hex> --format <...Labels...>" answers the labels of an image
+# the registry serves, as JSON, without putting it on the server; it fails for any other image, or
+# when STUB_TMP/labels_fail exists.
 printf '%s\n' "$*" >>"${STUB_TMP:?}/docker.log"
 case "$1 $2 $3" in
   "buildx imagetools inspect")
     [ -e "$STUB_TMP/inspect_fail" ] && exit 1
+    if [[ "${6:-}" == *Labels* ]]; then
+      [ ! -e "$STUB_TMP/labels_fail" ] || exit 1
+      v="$(awk -v h="${4##*@sha256:}" '$1 == h { print $2; found = 1; exit } END { exit !found }' \
+        "$STUB_TMP/registry_versions" 2>/dev/null)" || exit 1
+      printf '{"org.opencontainers.image.title":"n8n","org.opencontainers.image.version":"%s"}\n' "$v"
+      exit 0
+    fi
     [ -f "$STUB_TMP/inspect_fail_match" ] && case "$4" in *"$(cat "$STUB_TMP/inspect_fail_match")"*) exit 1 ;; esac
     sum="$(printf '%s' "$4" | sha256sum | cut -d' ' -f1)"
     printf '{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%s","size":1}\n' "$sum"

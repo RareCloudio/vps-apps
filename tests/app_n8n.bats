@@ -853,6 +853,8 @@ env_keys() {
 }
 
 N8N_REPO=docker.n8n.io/n8nio/n8n
+# How n8n_image_version asks the registry for an image's labels.
+LABELS_FMT='{{json (index .Image "linux/amd64").Config.Labels}}'
 
 # hex_of <ref>: the digest the docker stub answers for a tag.
 hex_of() {
@@ -916,9 +918,11 @@ n8n_image_in() {
   [ "$status" -eq 0 ]
   [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable")" ]
   [ ! -e "$STUB_TMP/curl.log" ]
-  # The installed version is read from the image on the server: no pull for it.
+  # The installed version is read from the image on the server, the new one from the registry:
+  # nothing is pulled before rc update pulls.
   grep -qxF "image inspect --format {{index .Config.Labels \"org.opencontainers.image.version\"}} $INSTALLED" "$STUB_TMP/docker.log"
-  refute_grep -qxF "pull -q $INSTALLED" "$STUB_TMP/docker.log"
+  grep -qxF "buildx imagetools inspect $N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable") --format $LABELS_FMT" "$STUB_TMP/docker.log"
+  refute_grep -q '^pull ' "$STUB_TMP/docker.log"
 }
 
 @test "update: a new major on stable is not taken; n8n moves to the newest full release of its major" {
@@ -934,6 +938,9 @@ n8n_image_in() {
   [[ "$output" == *"stays on n8n 2.x"* ]]
   [[ "$output" == *"n8n moves to 2.51.10, the newest 2.x release"* ]]
   grep -qF 'https://api.github.com/repos/n8n-io/n8n/releases' "$STUB_TMP/curl.log"
+  # Both labels come from the registry: neither the 3.x image nor the 2.x one is pulled here.
+  grep -qxF "buildx imagetools inspect $N8N_REPO@sha256:$(hex_of "$N8N_REPO:2.51.10") --format $LABELS_FMT" "$STUB_TMP/docker.log"
+  refute_grep -q '^pull ' "$STUB_TMP/docker.log"
   # Every other image is updated as usual, and the stable tag stays the one followed.
   grep -qxF "POSTGRES_IMAGE=postgres@sha256:$(hex_of postgres:16-alpine)" "$OUT"
   grep -qxF "N8N_IMAGE_REF=$N8N_REPO:stable" "$OUT"
@@ -1016,23 +1023,37 @@ n8n_image_in() {
   [[ "$output" == *"cannot read the version of the n8n image this server runs"* ]]
 }
 
-@test "update: an installed image no longer on the server is pulled by its digest to read its version" {
+@test "update: an installed image no longer on the server has its version read from the registry" {
   installed 2.49.8
   stable_is 2.50.1
   : >"$STUB_TMP/local_images"
   update
   [ "$status" -eq 0 ]
-  grep -qxF "pull -q $INSTALLED" "$STUB_TMP/docker.log"
+  grep -qxF "buildx imagetools inspect $INSTALLED --format $LABELS_FMT" "$STUB_TMP/docker.log"
+  refute_grep -q '^pull ' "$STUB_TMP/docker.log"
   [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable")" ]
 }
 
-@test "update: a stable image without a plain version label keeps n8n on its image" {
+@test "update: when the registry cannot give a label, the image is pulled by its digest and inspected" {
+  installed 2.49.8
+  stable_is 2.50.1
+  : >"$STUB_TMP/labels_fail"
+  update
+  [ "$status" -eq 0 ]
+  stable="$N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable")"
+  grep -qxF "pull -q $stable" "$STUB_TMP/docker.log"
+  refute_grep -qxF "pull -q $INSTALLED" "$STUB_TMP/docker.log"
+  [ "$(n8n_image_in "$OUT")" = "$stable" ]
+}
+
+@test "update: a stable image without a plain version label keeps n8n on its image, with no pull" {
   installed 2.49.8
   stable_is nightly
   update
   [ "$status" -eq 0 ]
   [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
   [[ "$output" == *"cannot read the version of the n8n image the stable tag points to"* ]]
+  refute_grep -q '^pull ' "$STUB_TMP/docker.log"
 }
 
 @test "update: when the tag still points to the image the server runs, nothing is inspected or pulled" {
@@ -1040,7 +1061,7 @@ n8n_image_in() {
   update
   [ "$status" -eq 0 ]
   [ "$(n8n_image_in "$OUT")" = "$(n8n_image_in "$DATA/.env")" ]
-  refute_grep -qE '^(image inspect|pull) ' "$STUB_TMP/docker.log"
+  refute_grep -qE '^(image inspect|pull) |Config.Labels' "$STUB_TMP/docker.log"
   [ -z "$output" ]
 }
 
