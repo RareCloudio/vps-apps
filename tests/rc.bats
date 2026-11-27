@@ -204,6 +204,30 @@ real_n8n_app() {
   grep -qE "^compose -f .*/n8n/compose\.yml -f .*/n8n/compose\.pro\.yml -f .*/n8n/compose\.expose\.yml .* up -d$" "$STUB_TMP/docker.log"
 }
 
+@test "rc update keeps n8n on its installed major when stable moves to a new one, and says so" {
+  real_n8n_app
+  repo=docker.n8n.io/n8nio/n8n
+  hex() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+  printf '%s\n' "N8N_IMAGE=$repo@sha256:$(hex installed)" "N8N_IMAGE_REF=$repo:stable" \
+    "POSTGRES_IMAGE=postgres@$ZEROS" POSTGRES_IMAGE_REF=postgres:16-alpine \
+    "VALKEY_IMAGE=valkey/valkey@$ZEROS" VALKEY_IMAGE_REF=valkey/valkey:8-alpine >"$DATA/.env"
+  chmod 600 "$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  printf '%s 2.49.8\n%s 3.0.0\n%s 2.50.2\n' "$(hex installed)" "$(hex "$repo:stable")" "$(hex "$repo:2.50.2")" \
+    >"$STUB_TMP/registry_versions"
+  hex installed >"$STUB_TMP/local_images"
+  printf '[{"tag_name":"n8n@3.0.0","prerelease":false,"draft":false},{"tag_name":"n8n@2.50.2","prerelease":false,"draft":false}]' \
+    >"$STUB_TMP/curl_body"
+  run "$RC" update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"n8n 3.0.0 is out, a new major version"* ]]
+  [[ "$output" == *"n8n moves to 2.50.2, the newest 2.x release"* ]]
+  [[ "$output" == *updated ]]
+  grep -qxF "N8N_IMAGE=$repo@sha256:$(hex "$repo:2.50.2")" "$DATA/.env"
+  grep -qxF "N8N_IMAGE_REF=$repo:stable" "$DATA/.env"
+  grep -qE "^compose -f .*/n8n/compose\.yml .* up -d$" "$STUB_TMP/docker.log"
+}
+
 @test "refresh_image_digests appends a missing image line and leaves other lines alone" {
   printf 'A=1\nB_IMAGE_REF=repo/b:2\n' >"$BATS_TEST_TMPDIR/e.env"
   refresh_image_digests "$BATS_TEST_TMPDIR/e.env"

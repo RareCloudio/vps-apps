@@ -820,3 +820,209 @@ env_keys() {
   [ ! -s "$BATS_TEST_TMPDIR/out" ]
   cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
 }
+
+N8N_REPO=docker.n8n.io/n8nio/n8n
+
+# hex_of <ref>: the digest the docker stub answers for a tag.
+hex_of() {
+  printf '%s' "$1" | sha256sum | cut -d' ' -f1
+}
+
+# registry_has <hex> <label>: the registry serves that image, with that version label.
+registry_has() {
+  printf '%s %s\n' "$1" "$2" >>"$STUB_TMP/registry_versions"
+}
+
+# installed <version> [ref]: a freshly prepared server whose n8n image (on the server) is labelled
+# <version>; with a ref, it is the image that ref points to. INSTALLED is that image.
+installed() {
+  local h
+  app_prepare
+  h="$(hex_of "${2:-installed-$1}")"
+  INSTALLED="$N8N_REPO@sha256:$h"
+  sed -i "s#^N8N_IMAGE=.*#N8N_IMAGE=$INSTALLED#" "$DATA/.env"
+  registry_has "$h" "$1"
+  printf '%s\n' "$h" >>"$STUB_TMP/local_images"
+}
+
+# stable_is <label>: the stable tag points to an image with that version label.
+stable_is() {
+  registry_has "$(hex_of "$N8N_REPO:stable")" "$1"
+}
+
+# tag_has <version> [label]: the registry has the n8n:<version> tag, labelled <version> (or <label>).
+tag_has() {
+  registry_has "$(hex_of "$N8N_REPO:$1")" "${2:-$1}"
+}
+
+# releases <tag:prerelease>...: what the GitHub releases API answers.
+releases() {
+  local a sep=""
+  {
+    printf '['
+    for a in "$@"; do
+      printf '%s{"tag_name":"%s","name":"%s","prerelease":%s,"draft":false}' "$sep" "${a%:*}" "${a%:*}" "${a##*:}"
+      sep=,
+    done
+    printf ']'
+  } >"$STUB_TMP/curl_body"
+}
+
+# update: run the hook as rc update does; OUT is the resolved .env.
+update() {
+  OUT="$BATS_TEST_TMPDIR/out"
+  run app_update_env "$DATA/.env" "$OUT"
+}
+
+n8n_image_in() {
+  sed -n 's/^N8N_IMAGE=//p' "$1"
+}
+
+@test "update: a newer stable of the installed major is taken as before, with no GitHub lookup" {
+  installed 2.49.8
+  stable_is 2.50.1
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable")" ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  # The installed version is read from the image on the server: no pull for it.
+  grep -qxF "image inspect --format {{index .Config.Labels \"org.opencontainers.image.version\"}} $INSTALLED" "$STUB_TMP/docker.log"
+  refute_grep -qxF "pull -q $INSTALLED" "$STUB_TMP/docker.log"
+}
+
+@test "update: a new major on stable is not taken; n8n moves to the newest full release of its major" {
+  installed 2.49.8
+  stable_is 3.0.1
+  releases stable:false beta:true n8n@3.0.1:false n8n@3.1.0:true n8n@2.52.0:true n8n@2.51.9:false \
+    n8n@2.51.10:false n8n@1.123.102:false n8n@2.49.8:false
+  tag_has 2.51.10
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:2.51.10")" ]
+  [[ "$output" == *"n8n 3.0.1 is out, a new major version"* ]]
+  [[ "$output" == *"stays on n8n 2.x"* ]]
+  [[ "$output" == *"n8n moves to 2.51.10, the newest 2.x release"* ]]
+  grep -qF 'https://api.github.com/repos/n8n-io/n8n/releases' "$STUB_TMP/curl.log"
+  # Every other image is updated as usual, and the stable tag stays the one followed.
+  grep -qxF "POSTGRES_IMAGE=postgres@sha256:$(hex_of postgres:16-alpine)" "$OUT"
+  grep -qxF "N8N_IMAGE_REF=$N8N_REPO:stable" "$OUT"
+}
+
+@test "update: a new major and GitHub does not answer: n8n keeps its image and says so" {
+  installed 2.49.8
+  stable_is 3.0.1
+  echo 22 >"$STUB_TMP/curl_rc"
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  [[ "$output" == *"cannot find a newer n8n 2.x release, so n8n stays on 2.49.8"* ]]
+  grep -qxF "VALKEY_IMAGE=valkey/valkey@sha256:$(hex_of valkey/valkey:8-alpine)" "$OUT"
+}
+
+@test "update: a new major and an unusable GitHub answer: n8n keeps its image" {
+  installed 2.49.8
+  stable_is 3.0.1
+  for body in '{"message":"API rate limit exceeded"}' 'not json' '[]' \
+    '[{"tag_name":"n8n@2.52.0","prerelease":true,"draft":false}]' \
+    '[{"tag_name":"n8n@2.52.0","prerelease":false,"draft":true}]' \
+    '[{"tag_name":"n8n@3.0.1","prerelease":false,"draft":false},{"tag_name":"stable","prerelease":false,"draft":false}]'; do
+    printf '%s' "$body" >"$STUB_TMP/curl_body"
+    update
+    [ "$status" -eq 0 ]
+    [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  done
+}
+
+@test "update: the release found must carry its own version in its label, else n8n keeps its image" {
+  installed 2.49.8
+  stable_is 3.0.1
+  releases n8n@2.51.10:false
+  tag_has 2.51.10 3.0.0
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+}
+
+@test "update: the newest release of the major being older than the installed one keeps the image" {
+  installed 2.55.0
+  stable_is 3.0.1
+  releases n8n@2.54.0:false
+  tag_has 2.54.0
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+}
+
+@test "update: the installed version being the newest of its major keeps n8n where it is" {
+  installed 2.51.10 "$N8N_REPO:2.51.10"
+  stable_is 3.0.1
+  releases n8n@2.51.10:false n8n@2.51.9:false
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  [[ "$output" == *"n8n stays on 2.51.10, the newest 2.x release"* ]]
+  refute_grep -q 'moves to' <<<"$output"
+}
+
+@test "update: n8n never moves back to an older version of its major" {
+  installed 2.49.8
+  stable_is 2.48.0
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  [[ "$output" == *"older than 2.49.8"* ]]
+}
+
+@test "update: an installed version that cannot be read keeps n8n on its image" {
+  installed 2.49.8
+  stable_is 2.50.1
+  # Neither on the server nor in the registry any more.
+  : >"$STUB_TMP/local_images"
+  sed -i "/^$(hex_of installed-2.49.8) /d" "$STUB_TMP/registry_versions"
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  [[ "$output" == *"cannot read the version of the n8n image this server runs"* ]]
+}
+
+@test "update: an installed image no longer on the server is pulled by its digest to read its version" {
+  installed 2.49.8
+  stable_is 2.50.1
+  : >"$STUB_TMP/local_images"
+  update
+  [ "$status" -eq 0 ]
+  grep -qxF "pull -q $INSTALLED" "$STUB_TMP/docker.log"
+  [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:stable")" ]
+}
+
+@test "update: a stable image without a plain version label keeps n8n on its image" {
+  installed 2.49.8
+  stable_is nightly
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$INSTALLED" ]
+  [[ "$output" == *"cannot read the version of the n8n image the stable tag points to"* ]]
+}
+
+@test "update: when the tag still points to the image the server runs, nothing is inspected or pulled" {
+  app_prepare
+  update
+  [ "$status" -eq 0 ]
+  [ "$(n8n_image_in "$OUT")" = "$(n8n_image_in "$DATA/.env")" ]
+  refute_grep -qE '^(image inspect|pull) ' "$STUB_TMP/docker.log"
+  [ -z "$output" ]
+}
+
+@test "update: a failed write of the held image fails the hook, so rc update changes nothing" {
+  n8n_env_set() { return 1; }
+  installed 2.49.8
+  stable_is 2.48.0
+  update
+  [ "$status" -eq 1 ]
+  : >"$STUB_TMP/registry_versions"
+  installed 2.49.8
+  stable_is 3.0.1
+  echo 22 >"$STUB_TMP/curl_rc"
+  update
+  [ "$status" -eq 1 ]
+}
