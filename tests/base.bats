@@ -24,6 +24,22 @@ meminfo() { printf 'MemTotal:       %s kB\n' "$1" >"$(p /proc/meminfo)"; }
   [ "$(sed -n 4p "$CALLS")" = "apt-get -o DPkg::Lock::Timeout=600 -y update" ]
 }
 
+@test "apt_safe waits while another process holds the dpkg lock, then repairs dpkg" {
+  echo 2 >"$BATS_TEST_TMPDIR/fuser_held"
+  VA_APT_LOCK_INTERVAL=0 apt_safe install foo
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/fuser.log")" -eq 3 ]
+  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/fuser.log")" = "$(p /var/lib/dpkg/lock-frontend) $(p /var/lib/dpkg/lock)" ]
+  [ "$(sed -n 1p "$CALLS")" = "dpkg --configure -a" ]
+}
+
+@test "a dpkg lock held past the wait fails apt_safe before dpkg runs" {
+  echo forever >"$BATS_TEST_TMPDIR/fuser_held"
+  VA_APT_LOCK_WAIT=1 VA_APT_LOCK_INTERVAL=0.2 run apt_safe install foo
+  [ "$status" -ne 0 ]
+  [ ! -s "$CALLS" ]
+  grep -q 'apt: another process still holds the dpkg lock' "$(p /var/log/vps-apps-install.log)"
+}
+
 @test "packages are installed, auto-upgrades enabled and NTP switched on" {
   base_packages
   grep -qF "install unattended-upgrades fail2ban nftables bind9-dnsutils jq curl ca-certificates" "$CALLS"
