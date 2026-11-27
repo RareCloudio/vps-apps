@@ -12,9 +12,22 @@ setup() {
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
   local t
-  for t in bash python3 cat cp mv rm mkdir mktemp chmod stat date dirname; do
+  for t in bash python3 cat cp mv rm mkdir mktemp chmod stat date dirname install; do
     ln -sf "$(command -v "$t")" "$BIN/$t"
   done
+  RUNNER="$VPS_APPS_ROOT/usr/local/sbin/vps-apps-ipv6-onlink"
+  CHECKER="$VPS_APPS_ROOT/usr/local/lib/vps-apps/netplan-onlink.py"
+  UNIT="$VPS_APPS_ROOT/etc/systemd/system/vps-apps-ipv6-onlink.service"
+}
+
+# boot_runner: the runner alone, as its unit runs it at boot, installed from this checkout under
+# the test root, with the restricted PATH.
+boot_runner() {
+  mkdir -p "${RUNNER%/*}" "${CHECKER%/*}"
+  cp "$ROOT_DIR/base/files/vps-apps-ipv6-onlink" "$RUNNER"
+  cp "$ROOT_DIR/base/files/netplan-onlink.py" "$CHECKER"
+  chmod 755 "$RUNNER"
+  run env PATH="$BATS_TEST_DIRNAME/stubs:$BIN" "$RUNNER"
 }
 
 # network_step: base_network as install.sh runs it (errexit, nounset, pipefail), in a fresh bash
@@ -434,4 +447,103 @@ YAML
   untouched "$VIRT"
   [ ! -e "$BACKUP" ]
   grep -qF 'network: python3 is missing, the netplan files are not checked' "$LOG"
+}
+
+# --- at every boot: the panel rewrites its netplan file when the VPS is restarted from it ---
+
+@test "the unit runs the runner once per boot, after local filesystems and before networkd" {
+  local f="$ROOT_DIR/base/files/vps-apps-ipv6-onlink.service" line
+  for line in '[Unit]' 'DefaultDependencies=no' 'After=local-fs.target' \
+    'Before=systemd-networkd.service network-pre.target shutdown.target' 'Wants=network-pre.target' \
+    'Conflicts=shutdown.target' '[Service]' 'Type=oneshot' 'ExecStart=/usr/local/sbin/vps-apps-ipv6-onlink' \
+    'TimeoutStartSec=60' '[Install]' 'WantedBy=systemd-networkd.service'; do
+    grep -qxF -- "$line" "$f"
+  done
+  refute_grep -q '^RemainAfterExit=yes' "$f"
+}
+
+@test "the step installs the checker, the runner and the unit, and enables the unit" {
+  network_step
+  [ "$status" -eq 0 ]
+  cmp "$ROOT_DIR/base/files/netplan-onlink.py" "$CHECKER"
+  cmp "$ROOT_DIR/base/files/vps-apps-ipv6-onlink" "$RUNNER"
+  cmp "$ROOT_DIR/base/files/vps-apps-ipv6-onlink.service" "$UNIT"
+  [ "$(stat -c %a "$CHECKER")" = 644 ]
+  [ "$(stat -c %a "$RUNNER")" = 755 ]
+  [ "$(stat -c %a "$UNIT")" = 644 ]
+  [ "$(cat "$STUB_TMP/systemctl.log")" = "$(printf '%s\n' daemon-reload 'enable vps-apps-ipv6-onlink.service')" ]
+}
+
+@test "at boot the runner fixes the file the panel rewrote, on stdout only, with no live route" {
+  virt_file
+  boot_runner
+  [ "$status" -eq 0 ]
+  grep -qx '          on-link: true' "$VIRT"
+  [[ "$output" == *"$VIRT: on-link added to the IPv6 default route via 2a06:a880:5::1 on eth0"* ]]
+  [ ! -e "$STUB_TMP/ip.log" ]
+  [ ! -e "$STUB_TMP/ping.log" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "the runner is idempotent and regenerates only when it changed a file" {
+  virt_file
+  keep_copies "$VIRT"
+  boot_runner
+  [ "$status" -eq 0 ]
+  # It changed the file: generate ran on the files as they were, then on the fixed file, which is
+  # what writes /run/systemd/network for networkd.
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 2 ]
+  [ "$(tail -n 18 "$STUB_TMP/netplan.seen")" = "$(cat "$VIRT")" ]
+  grep -qx '          on-link: true' "$VIRT"
+  cp "$VIRT" "$BATS_TEST_TMPDIR/fixed"
+  rm "$STUB_TMP/netplan.log"
+  boot_runner
+  [ "$status" -eq 0 ]
+  cmp "$BATS_TEST_TMPDIR/fixed" "$VIRT"
+  [ ! -e "$STUB_TMP/netplan.log" ]
+  [[ "$output" == *"the netplan files need no change"* ]]
+  # A panel restart writes the broken file again: the next boot fixes it again, the first backup stays.
+  cp "$BATS_TEST_TMPDIR/99-virt-eth0.yaml.before" "$VIRT"
+  printf 'the first original\n' >"$BACKUP/99-virt-eth0.yaml.orig"
+  boot_runner
+  [ "$status" -eq 0 ]
+  cmp "$BATS_TEST_TMPDIR/fixed" "$VIRT"
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 2 ]
+  [ "$(cat "$BACKUP/99-virt-eth0.yaml.orig")" = "the first original" ]
+}
+
+@test "the runner never exits non-zero, whatever fails" {
+  virt_file
+  keep_copies "$VIRT"
+  echo 1 >"$STUB_TMP/netplan_fail_calls"
+  boot_runner
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  [[ "$output" == *"netplan is already invalid"* ]]
+  rm "$STUB_TMP/netplan.log"
+  echo 2 3 >"$STUB_TMP/netplan_fail_calls"
+  boot_runner
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  [[ "$output" == *"netplan generate after the restore failed"* ]]
+  rm "$STUB_TMP/netplan_fail_calls"
+  rm "$BIN/python3"
+  boot_runner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"python3 is missing"* ]]
+  ln -s "$(command -v python3)" "$BIN/python3"
+  rm "$CHECKER"
+  run env PATH="$BATS_TEST_DIRNAME/stubs:$BIN" "$RUNNER"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cannot read $CHECKER, the netplan files are not checked"* ]]
+  untouched "$VIRT"
+  mkdir -p "$VPS_APPS_ROOT/var/lib"
+  rm -rf "$VPS_APPS_ROOT/var/lib/vps-apps"
+  : >"$VPS_APPS_ROOT/var/lib/vps-apps"
+  boot_runner
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  rm -rf "$NETPLAN"
+  boot_runner
+  [ "$status" -eq 0 ]
 }
