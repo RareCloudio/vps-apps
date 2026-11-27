@@ -46,6 +46,8 @@ R="${VPS_APPS_ROOT:-}"
 ENV_FILE="$R/etc/vps-apps/env"
 PW_FILE="$R/etc/vps-apps/password"
 STATE="$R/var/lib/vps-apps"
+# install.sh's own copy of the password; it removes it when it exits, unless it was killed.
+PW_COPY="$STATE/.admin-password"
 STATUS_DIR="$STATE/public/.well-known"
 STATUS_FILE="$STATUS_DIR/rarecloud-app-status"
 FIRST="$STATE/first-attempt"
@@ -81,9 +83,12 @@ mark_failed() {
   write_status "failed:$1" || true
 }
 
-# finish: the timer is switched off and the password is destroyed.
+# finish: the timer is switched off and the password (and install.sh's copy of it) is destroyed.
 finish() {
-  if [ -e "$PW_FILE" ]; then shred -u "$PW_FILE" 2>/dev/null || rm -f "$PW_FILE"; fi
+  local f
+  for f in "$PW_FILE" "$PW_COPY"; do
+    if [ -e "$f" ]; then shred -u "$f" 2>/dev/null || rm -f "$f"; fi
+  done
   systemctl disable --now "$TIMER" || true
 }
 

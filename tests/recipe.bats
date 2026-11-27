@@ -399,3 +399,20 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   [ ! -e "$VPS_APPS_ROOT$pw_file" ]
   grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
 }
+
+@test "finishing also shreds the password copy install.sh keeps, in case install.sh was killed" {
+  install_recipe
+  mkdir -p "$VPS_APPS_ROOT$STATE/public/.well-known"
+  printf 'Secret9A' >"$VPS_APPS_ROOT$STATE/.admin-password"
+  printf 'ready' >"$VPS_APPS_ROOT$STATUS"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ ! -e "$VPS_APPS_ROOT$STATE/.admin-password" ]
+  rm -f "$VPS_APPS_ROOT$STATUS"
+  install_recipe
+  printf 'Secret9A' >"$VPS_APPS_ROOT$STATE/.admin-password"
+  echo 2 >"$STUB_TMP/install_rc"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$VPS_APPS_ROOT$STATE/.admin-password" ]
+}
