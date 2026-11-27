@@ -54,3 +54,13 @@ setup() {
   run bash "$INSTALL" --app docker --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
   [ "$status" -eq 3 ]
 }
+
+@test "install.sh refuses to run when not root, before it looks at anything else" {
+  mkdir -p "$BATS_TEST_TMPDIR/fakebin"
+  printf '#!/bin/sh\necho 1000\n' >"$BATS_TEST_TMPDIR/fakebin/id"
+  chmod +x "$BATS_TEST_TMPDIR/fakebin/id"
+  # No test root here, as on a real server; no arguments, so nothing could be installed either way.
+  run env -u VPS_APPS_ROOT PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" bash "$INSTALL"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"run as root"* ]]
+}

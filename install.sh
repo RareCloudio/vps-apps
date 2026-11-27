@@ -16,6 +16,15 @@ usage_error() {
   exit 2
 }
 
+# require_root: install.sh changes the whole system. A non-empty VPS_APPS_ROOT is a test root, where
+# root is not needed (the same rule as rc).
+require_root() {
+  if [ -z "${VPS_APPS_ROOT:-}" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "install.sh: run as root (sudo $0 ...)" >&2
+    exit 2
+  fi
+}
+
 require_ubuntu_2404() {
   local f id version
   f="$(p /etc/os-release)"
@@ -118,6 +127,7 @@ wait_until_ready() {
 }
 
 main() {
+  require_root
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
