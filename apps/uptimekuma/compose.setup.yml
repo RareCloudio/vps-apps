@@ -1,0 +1,6 @@
+# Before exposure: Uptime Kuma answers on the server's own loopback only, so the admin account is
+# created before anyone else can reach the first-run setup page.
+services:
+  uptime-kuma:
+    ports:
+      - "127.0.0.1:3001:3001"
