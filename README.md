@@ -6,13 +6,13 @@ Turn a fresh Ubuntu 24.04 server into a properly set up Docker server or n8n ser
 
 You get:
 
-- **A firewall that covers your containers.** Ports published by Docker stay closed until you open them with `rc port open <port>`. IPv4 and IPv6.
-- **A locked-down base.** SSH password login is turned off as soon as a working key is installed, fail2ban watches SSH, security updates install themselves, container logs are rotated and old images are pruned every week.
+- **A firewall that covers your containers.** Ports published by Docker stay closed until you open them with `rc port open <port>`. The firewall covers IPv6 too when the server has it.
+- **A locked-down base.** SSH password login is turned off at install when a working key is already in place (a server installed without a key keeps password login), fail2ban watches SSH, security updates install themselves, container logs are rotated, and dangling images and old build cache are pruned every week.
 - **HTTPS with no setup.** A reverse proxy gets and renews certificates for any container that carries two labels.
 - **A sensible machine.** Swap sized from your RAM, time sync on, kernel hardening applied.
 - **The `rc` command.** Status, logs, updates, ports and domains in one short command.
 
-Doing this by hand takes an afternoon and a checklist you will forget half of. Here it is one command.
+One command gives you all of it, with the same result on every server.
 
 ## Run it
 
@@ -27,8 +27,7 @@ mv "vps-apps-$VERSION" "$VERSION" && ln -sfn "/opt/vps-apps/$VERSION" /opt/vps-a
 mkdir -p /etc/vps-apps
 printf 'APP=n8n\nVA_HOST=n8n.example.com\nVA_IP=203.0.113.10\n' > /etc/vps-apps/env
 
-umask 077
-printf '%s' 'your-admin-password' > /root/admin-password
+(umask 077; printf '%s' 'your-admin-password' > /root/admin-password)
 
 /opt/vps-apps/current/install.sh --app n8n --host n8n.example.com --ip 203.0.113.10 \
   --password-file /root/admin-password
@@ -43,12 +42,12 @@ Arguments:
 | `--app` | `docker` or `n8n` |
 | `--host` | A domain name for this server. Point its A record at the server. The installer waits up to five minutes for the name to resolve before it asks for a certificate. |
 | `--ip` | The server's public IPv4 address |
-| `--password-file` | A file with the admin password (the n8n owner login) |
+| `--password-file` | Required for both apps. A file with the admin password; n8n uses it for the owner login, the Docker app does not use it. Delete it once the install is ready. |
 | `--mode` | n8n only: `starter` (default) or `pro` |
 
 It exits 0 when the app is ready, 1 when a step failed (run it again, finished steps are skipped), 2 for bad arguments and 3 on any other OS than Ubuntu 24.04.
 
-Watch it work at `http://<server ip>/.well-known/rarecloud-app-status`. It says `installing`, `ready`, or `failed:<step>`. The same status and a link to your server show when you log in over SSH.
+Watch it work at `http://<server ip>/.well-known/rarecloud-app-status`. It answers from the proxy step on (a refused connection before that is normal). It says `installing`, `ready`, or `failed:<step>`. The same status and a link to your server show when you log in over SSH.
 
 ## The apps
 
@@ -89,11 +88,11 @@ On the Docker server, extra domains go on your own containers with the labels ab
 
 The installer runs a fixed list of steps: packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
-Secrets are generated on the server, once, and never leave it. Images are pinned by digest at install, and `rc update` moves them to the newest release. App data lives in Docker named volumes, so back those up.
+Images are pinned by digest at install, and `rc update` moves them to the newest release. On n8n, the database password and encryption key are generated on the server, once, and stay there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
 
 ## Made for RareCloud
 
-RareCloud sells these servers ready-made: you get the link and the login in your welcome email. [Have a look](https://rarecloud.io/?utm_source=github&utm_medium=readme&utm_campaign=vps-apps).
+RareCloud sells these servers ready-made: you order one and it installs itself, with your HTTPS link ready. [Have a look](https://rarecloud.io/?utm_source=github&utm_medium=readme&utm_campaign=vps-apps).
 
 ## Develop
 
