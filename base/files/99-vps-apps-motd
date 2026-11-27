@@ -34,4 +34,7 @@ if [ -n "$host" ]; then
 fi
 echo "  Status: $status"
 echo "  Login: use the password you set when you ordered this server. 'rc status' shows the details."
+if [ -f "$R/root/vps-apps-credentials.txt" ]; then
+  echo "  The password you set does not meet the n8n rules: the generated login is in /root/vps-apps-credentials.txt"
+fi
 echo

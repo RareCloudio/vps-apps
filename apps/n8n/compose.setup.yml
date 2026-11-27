@@ -1,0 +1,6 @@
+# Before exposure: n8n answers on the server's own loopback only, so the owner account is created
+# before anyone else can reach the setup page.
+services:
+  n8n:
+    ports:
+      - "127.0.0.1:5678:5678"

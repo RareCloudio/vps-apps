@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# The "n8n" app: n8n on Postgres, plus Valkey and two workers in pro mode. Sourced by install.sh and
+# by rc, never executed. It implements the hook contract described in apps/docker/app.sh.
+#
+# The order that matters: the stack starts with n8n published on 127.0.0.1 only (compose.setup.yml),
+# the owner account is created through n8n's own REST call on that loopback port, and only then does
+# app_expose swap in compose.expose.yml (the caddy labels, no published port). Nobody else can reach
+# the setup page before the owner exists.
+#
+# The owner is created by the REST call, not by environment variables, so it stays an ordinary
+# account the owner can change in the n8n UI. Its password is only ever read from the password file
+# and sent on stdin; it is in no compose file, env file or container environment.
+
+VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VA_N8N_IMAGE_REF="docker.n8n.io/n8nio/n8n:latest"
+VA_N8N_POSTGRES_IMAGE_REF="postgres:16-alpine"
+VA_N8N_VALKEY_IMAGE_REF="valkey/valkey:8-alpine"
+
+app_data_dir() {
+  p /opt/vps-apps-data/n8n
+}
+
+# The mode chosen at install ("starter" or "pro") lives in a file, because rc runs later without
+# arguments. An empty or missing value means starter.
+app_mode() {
+  local f mode=""
+  f="$(app_data_dir)/mode"
+  [ ! -r "$f" ] || mode="$(cat "$f")"
+  [ "$mode" = pro ] && echo pro || echo starter
+}
+
+app_compose_files() {
+  printf '%s\n' "$VA_APP_DIR/compose.yml"
+  if [ "$(app_mode)" = pro ]; then
+    printf '%s\n' "$VA_APP_DIR/compose.pro.yml"
+  fi
+  if [ -f "$(app_data_dir)/exposed" ]; then
+    printf '%s\n' "$VA_APP_DIR/compose.expose.yml"
+  else
+    printf '%s\n' "$VA_APP_DIR/compose.setup.yml"
+  fi
+}
+
+# app_compose <docker compose args...>
+app_compose() {
+  compose_run "$(app_data_dir)/.env" "$@"
+}
+
+# app_site_addrs: the server's own name first, then every valid extra domain from
+# /etc/vps-apps/domains (one per line), separated by spaces. The caddy label uses it byte for byte.
+app_site_addrs() {
+  local addrs="$VA_HOST" f line
+  f="$(p /etc/vps-apps/domains)"
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if valid_hostname "$line" && [ "$line" != "$VA_HOST" ] && [[ " $addrs " != *" $line "* ]]; then
+        addrs+=" $line"
+      fi
+    done <"$f"
+  fi
+  printf '%s' "$addrs"
+}
+
+# app_url_vars: the three URL variables. The primary URL is always the server's own name.
+app_url_vars() {
+  printf 'WEBHOOK_URL=https://%s/\nN8N_EDITOR_BASE_URL=https://%s\nN8N_HOST=%s\n' "$VA_HOST" "$VA_HOST" "$VA_HOST"
+}
+
+# app_prepare: the mode, then the .env, created once. An existing .env is kept as it is, so every
+# secret stays byte-identical on a re-run. Every image is resolved before anything is written.
+app_prepare() {
+  local data n8n_image pg_image valkey_image line out="" site_addrs
+  data="$(app_data_dir)"
+  mkdir -p "$data"
+  if [ -n "${VA_MODE:-}" ] || [ ! -f "$data/mode" ]; then
+    printf '%s' "${VA_MODE:-starter}" | write_atomic "$data/mode" 0644
+  fi
+  [ ! -f "$data/.env" ] || return 0
+
+  n8n_image="$(resolve_image_digest "$VA_N8N_IMAGE_REF")" || return 1
+  pg_image="$(resolve_image_digest "$VA_N8N_POSTGRES_IMAGE_REF")" || return 1
+  valkey_image="$(resolve_image_digest "$VA_N8N_VALKEY_IMAGE_REF")" || return 1
+  site_addrs="$(app_site_addrs)"
+
+  local -A vars=(
+    [N8N_IMAGE]="$n8n_image" [N8N_IMAGE_REF]="$VA_N8N_IMAGE_REF"
+    [POSTGRES_IMAGE]="$pg_image" [POSTGRES_IMAGE_REF]="$VA_N8N_POSTGRES_IMAGE_REF"
+    [VALKEY_IMAGE]="$valkey_image" [VALKEY_IMAGE_REF]="$VA_N8N_VALKEY_IMAGE_REF"
+    [POSTGRES_PASSWORD]="$(openssl rand -hex 24)"
+    [N8N_ENCRYPTION_KEY]="$(openssl rand -hex 32)"
+    [VA_SITE_ADDRS]="$site_addrs"
+    [N8N_HOST]="$VA_HOST"
+    [WEBHOOK_URL]="https://$VA_HOST/"
+    [N8N_EDITOR_BASE_URL]="https://$VA_HOST"
+  )
+  local key
+  while IFS= read -r line || [ -n "$line" ]; do
+    for key in "${!vars[@]}"; do
+      line="${line//@${key}@/${vars[$key]}}"
+    done
+    out+="$line"$'\n'
+  done <"$VA_APP_DIR/env.tmpl"
+  printf '%s' "$out" | write_atomic "$data/.env" 0600
+}
+
+app_up_setup() {
+  app_compose up -d
+}
+
+# n8n_password_ok <file>: the n8n rule, 8 to 64 characters with an uppercase letter and a digit,
+# judged on the exact bytes of the file.
+n8n_password_ok() {
+  local pw
+  pw="$(
+    cat "$1"
+    printf x
+  )"
+  pw="${pw%x}"
+  [ "${#pw}" -ge 8 ] && [ "${#pw}" -le 64 ] && [[ "$pw" =~ [A-Z] ]] && [[ "$pw" =~ [0-9] ]]
+}
+
+# n8n_wait_for_api: wait, bounded, until n8n answers on the loopback port.
+n8n_wait_for_api() {
+  local deadline
+  deadline=$((SECONDS + ${VA_N8N_WAIT:-180}))
+  until curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:5678/healthz 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      log "n8n: no answer on 127.0.0.1:5678"
+      return 1
+    fi
+    sleep "${VA_N8N_INTERVAL:-3}"
+  done
+}
+
+# app_create_admin <password-file>: the owner account through n8n's REST call on the loopback port.
+# The body is built with jq from the password file and goes to curl on stdin. A password that breaks
+# n8n's rule is replaced by a generated one in /root/vps-apps-credentials.txt (mode 600); a retry
+# reuses that file. n8n answers HTTP 400 "Instance owner already setup" when the owner exists
+# (a retry after the call succeeded), which counts as success.
+app_create_admin() {
+  local pwfile="$1" cred tmp="" body code rc=0
+  cred="$(p /root/vps-apps-credentials.txt)"
+  if ! n8n_password_ok "$pwfile"; then
+    log "n8n: the chosen password does not meet n8n's rule, using a generated one"
+    tmp="$(mktemp "$(app_data_dir)/.owner-pw.XXXXXX")"
+    chmod 600 "$tmp"
+    if [ -f "$cred" ]; then
+      sed -n 's/^Password: //p' "$cred" | head -n1 | tr -d '\n' >"$tmp"
+    fi
+    if [ ! -s "$tmp" ]; then
+      printf 'Rc9%s' "$(openssl rand -hex 16)" >"$tmp"
+      (
+        umask 077
+        mkdir -p "$(dirname "$cred")"
+        printf 'n8n owner login, generated because the password you chose does not meet n8n rules\nEmail: admin@%s\nPassword: %s\n' \
+          "$VA_HOST" "$(cat "$tmp")" | write_atomic "$cred" 0600
+      )
+    fi
+    pwfile="$tmp"
+  fi
+
+  body="$(mktemp)"
+  if n8n_wait_for_api; then
+    code="$(jq -n --rawfile pw "$pwfile" --arg email "admin@$VA_HOST" \
+      '{email: $email, firstName: "Admin", lastName: "RareCloud", password: $pw}' |
+      curl -sS -o "$body" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @- \
+        http://127.0.0.1:5678/rest/owner/setup)" || code=000
+    case "$code" in
+      200) ;;
+      400) grep -q 'Instance owner already setup' "$body" || rc=1 ;;
+      *) rc=1 ;;
+    esac
+    [ "$rc" -eq 0 ] || log "n8n: owner setup failed with HTTP $code: $(head -c 200 "$body")"
+  else
+    rc=1
+  fi
+  rm -f "$body" "$tmp"
+  return "$rc"
+}
+
+app_expose() {
+  : >"$(app_data_dir)/exposed"
+  set_site_mode app
+  if ! app_compose up -d; then
+    log "n8n: starting the exposed stack failed"
+    # Stop whatever came up, drop the marker (so rc names the setup file again) and show the failed
+    # page instead of leaving a half-exposed server.
+    app_compose down || true
+    rm -f "$(app_data_dir)/exposed"
+    set_site_mode failed
+    return 1
+  fi
+}
+
+# n8n must answer /healthz over HTTPS on the server's own name with a valid certificate. The body is
+# captured first: a pipe into grep -q can fail curl with error 23 under pipefail.
+app_ready_check() {
+  local body
+  body="$(curl -fsS --max-time 10 --resolve "$VA_HOST:443:127.0.0.1" "https://$VA_HOST/healthz")" || return 1
+  grep -q '"status":"ok"' <<<"$body"
+}
+
+# app_domain_added <domain>: rewrite the address list and the three URL variables from the host and
+# /etc/vps-apps/domains, then recreate n8n. The primary URL stays the server's own name.
+app_domain_added() {
+  local env_file line key out="" site_addrs
+  env_file="$(app_data_dir)/.env"
+  site_addrs="$(app_site_addrs)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    key="${line%%=*}"
+    case "$key" in
+      VA_SITE_ADDRS) line="VA_SITE_ADDRS=\"$site_addrs\"" ;;
+      WEBHOOK_URL) line="WEBHOOK_URL=https://$VA_HOST/" ;;
+      N8N_EDITOR_BASE_URL) line="N8N_EDITOR_BASE_URL=https://$VA_HOST" ;;
+      N8N_HOST) line="N8N_HOST=$VA_HOST" ;;
+    esac
+    out+="$line"$'\n'
+  done <"$env_file"
+  printf '%s' "$out" | write_atomic "$env_file" 0600
+  app_compose up -d
+}

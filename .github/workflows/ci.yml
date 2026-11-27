@@ -26,12 +26,7 @@ jobs:
         run: bats tests/
 
       - name: Validate compose files
-        run: |
-          shopt -s nullglob
-          for f in apps/*/compose*.yml base/proxy/compose.yml; do
-            echo "validating $f"
-            VA_SITE_ADDRS=ci.example.com docker compose -f "$f" config -q
-          done
+        run: scripts/check-compose.sh
 
       - name: Parse the base Caddyfile in every site mode
         run: scripts/check-caddyfile.sh
