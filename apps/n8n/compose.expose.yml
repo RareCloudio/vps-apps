@@ -1,0 +1,14 @@
+# After exposure: the caddy labels serve n8n on the server's own name (VA_SITE_ADDRS in the app
+# .env). The default network is kept for the database; web is the proxy's network.
+services:
+  n8n:
+    networks:
+      - default
+      - web
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 5678}}"
+
+networks:
+  web:
+    external: true

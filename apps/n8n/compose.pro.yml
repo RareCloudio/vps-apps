@@ -1,0 +1,37 @@
+# Pro mode: n8n in queue mode with Valkey and two workers. Added after compose.yml.
+x-queue-env: &queue-env
+  EXECUTIONS_MODE: queue
+  QUEUE_BULL_REDIS_HOST: valkey
+
+services:
+  valkey:
+    image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    restart: unless-stopped
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  n8n:
+    environment: *queue-env
+    depends_on:
+      valkey:
+        condition: service_healthy
+
+  n8n-worker:
+    extends:
+      file: compose.yml
+      service: n8n
+    command: ["worker"]
+    environment: *queue-env
+    depends_on:
+      valkey:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
+volumes:
+  valkey_data:
