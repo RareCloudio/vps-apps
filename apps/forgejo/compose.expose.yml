@@ -1,0 +1,18 @@
+# After exposure: the caddy labels serve Forgejo on the server's own name (VA_SITE_ADDRS in the app
+# .env), and Forgejo's SSH server is published on 2222 for git. The host firewall passes 2222 because
+# app_expose lists it in /etc/vps-apps/open-ports first. The default network is kept as in the other
+# apps; web is the proxy's network.
+services:
+  forgejo:
+    networks:
+      - default
+      - web
+    ports:
+      - "2222:2222"
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+
+networks:
+  web:
+    external: true
