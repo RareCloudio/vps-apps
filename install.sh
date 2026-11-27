@@ -200,7 +200,7 @@ wait_until_ready() {
 
 # The steps in their order, as <name>:<function>. A finished step leaves steps/<name>.done.
 VA_STEPS=(
-  packages:base_packages swap:base_swap sysctl:base_sysctl docker:base_docker
+  network:base_network packages:base_packages swap:base_swap sysctl:base_sysctl docker:base_docker
   firewall:base_firewall proxy:base_proxy ssh:base_ssh motd:base_motd
   app_prepare:app_prepare app_up_setup:app_up_setup app_create_admin:step_app_create_admin
   app_expose:app_expose

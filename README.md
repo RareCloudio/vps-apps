@@ -84,7 +84,7 @@ On the Docker server, extra domains go on your own containers with the labels ab
 
 ## How it works
 
-The installer runs a fixed list of steps: packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
+The installer runs a fixed list of steps: network (an IPv6 gateway outside the server's own prefix gets the on-link flag it needs, so IPv6 works), packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
 Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `latest` tag. On n8n, the database password and encryption key are generated on the server, once, and stay there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
 

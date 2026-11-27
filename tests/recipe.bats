@@ -425,7 +425,7 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$VPS_APPS_ROOT/etc/os-release"
   # The real install.sh as the bootstrap runs it, with the IP the bootstrap detected in memory. The
   # first step is stubbed to fail, so nothing else runs.
-  run bash -c '. "$1"; load_code() { base_packages() { return 1; }; }; main --app docker --host h1.example.com --ip 85.121.120.207 --password-file "$2"' \
+  run bash -c '. "$1"; load_code() { base_network() { return 1; }; }; main --app docker --host h1.example.com --ip 85.121.120.207 --password-file "$2"' \
     _ "$BATS_TEST_DIRNAME/../install.sh" "$VPS_APPS_ROOT$pw_file"
   [ "$status" -eq 1 ]
   cmp "$VPS_APPS_ROOT/etc/vps-apps/env" "$BATS_TEST_TMPDIR/env.before"
