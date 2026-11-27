@@ -32,11 +32,31 @@ net_route() {
     log "network: ip -6 route replace default via $2 dev $1 onlink failed"
 }
 
+# Every log line below carries only the first line of netplan's output: the install log is
+# world-readable, and netplan's errors quote the file, which can hold a wifi password or a key.
+
+# net_baseline_ok: 0 when netplan generate accepts the netplan files as they are, checked once per
+# run, before the first change. When it fails, no file is changed: a change it rejected could not
+# be told apart from the fault that was already there.
+net_baseline_ok() {
+  local out
+  if [ -z "$VA_NET_BASELINE" ]; then
+    if out="$(net_generate 2>&1)"; then
+      VA_NET_BASELINE=ok
+    else
+      VA_NET_BASELINE=invalid
+      log "network: netplan generate fails before any change, so netplan is already invalid; the netplan files are left as they are: ${out%%$'\n'*}"
+    fi
+  fi
+  [ "$VA_NET_BASELINE" = ok ]
+}
+
 # net_fix_file <file> <work-dir>: add on-link: true where netplan-onlink.py says a route needs it.
-# The file is touched only then: the original is kept once as backup/netplan/<name>.orig (a backup
-# that exists is never replaced), the file is replaced whole with its own mode, and netplan generate
-# must accept it, or the file is put back byte for byte. Only a fix that is kept goes to net_route.
-# Sets VA_NET_CHANGED=1 when a file needed a change.
+# The file is touched only then, and only when netplan accepts the files as they are
+# (net_baseline_ok): the original is kept once as backup/netplan/<name>.orig (a backup that exists
+# is never replaced), the file is replaced whole with its own mode, and netplan generate must accept
+# it, or the file is put back byte for byte and generated again. Only a fix that is kept goes to
+# net_route. Sets VA_NET_CHANGED=1 when a file needed a change.
 net_fix_file() {
   local file="$1" work="$2" name backup mode fixes out dev gw
   name="${file##*/}"
@@ -48,6 +68,7 @@ net_fix_file() {
   fi
   [ -n "$fixes" ] || return 0
   VA_NET_CHANGED=1
+  net_baseline_ok || return 0
   if ! { mode="$(stat -c %a "$file")" && mkdir -p "$backup" && chmod 0700 "$backup" &&
     { [ -e "$backup/$name.orig" ] || cp -p "$file" "$backup/$name.orig"; } && cat "$file" >"$work/prev"; }; then
     log "network: cannot keep a copy of $file, left as it is"
@@ -59,7 +80,13 @@ net_fix_file() {
   fi
   if ! out="$(net_generate 2>&1)"; then
     if write_atomic "$file" "$mode" <"$work/prev"; then
-      log "network: netplan generate rejected the change to $file, the original is back: ${out//$'\n'/ }"
+      log "network: netplan generate rejected the change to $file, the original is back: ${out%%$'\n'*}"
+      # The rejected run may have left files in /run for the changed version: generate them again.
+      if out="$(net_generate 2>&1)"; then
+        log "network: netplan generate after the restore: ok"
+      else
+        log "network: netplan generate after the restore failed: ${out%%$'\n'*}"
+      fi
     else
       log "network: netplan generate rejected the change to $file, which could not be put back; the original is $backup/$name.orig"
     fi
@@ -108,6 +135,6 @@ net_ping6() {
 # base_network: the step. Its body runs as a condition, so errexit is off inside: every command that
 # matters checks its own result above, and nothing here can fail the install.
 base_network() {
-  VA_NET_CHANGED=0
+  VA_NET_CHANGED=0 VA_NET_BASELINE=""
   { net_fix_all; net_ping6; } || true
 }
