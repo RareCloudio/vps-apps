@@ -542,3 +542,44 @@ loads_app() {
   run "$MOTD_SRC"
   refute_grep -qF 'owner@example.org' <<<"$output"
 }
+
+# motd_for <app>: the login message of a server that runs <app>, with an owner email recorded.
+motd_for() {
+  printf 'APP=%s\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=owner@example.org\n' "$1" >"$ETC/app.env"
+  run "$MOTD_SRC"
+  [ "$status" -eq 0 ]
+}
+
+@test "the motd names the Nextcloud login" {
+  motd_for nextcloud
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+  refute_grep -qF 'owner@example.org' <<<"$output"
+}
+
+@test "the motd names the WordPress login page and login" {
+  motd_for wordpress
+  [[ "$output" == *"  Login: https://app.example.com/wp-admin/ as admin, with the password you set when you ordered this server."* ]]
+  refute_grep -qF 'owner@example.org' <<<"$output"
+}
+
+@test "the motd names the Forgejo login and the git SSH port" {
+  motd_for forgejo
+  [[ "$output" == *"  Login: gitadmin, with the password you set when you ordered this server. Git over SSH: port 2222."* ]]
+}
+
+@test "the motd names the Uptime Kuma login" {
+  motd_for uptimekuma
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+}
+
+@test "the motd points to the credentials file before any login hint, for every app" {
+  local app
+  mkdir -p "$(p /root)"
+  : >"$(p /root/vps-apps-credentials.txt)"
+  for app in n8n nextcloud forgejo wordpress uptimekuma; do
+    motd_for "$app"
+    [[ "$output" == *"  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"* ]]
+    refute_grep -q 'Login:' <<<"$output"
+    refute_grep -q 'n8n' <<<"$output"
+  done
+}
