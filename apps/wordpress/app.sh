@@ -10,8 +10,9 @@
 # WordPress itself says it is installed and that registration is closed.
 #
 # The admin password is only ever read from the password file and sent on stdin: to WP-CLI's
-# documented prompt for wp core install, then to a login check that reads the raw bytes. It is in no
-# argument, compose file, env file or container environment.
+# documented prompt for wp core install (or wp user update, when a retry sets it again), then to a
+# login check that reads the raw bytes. It is in no argument, compose file, env file or container
+# environment.
 
 VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The image seeds the WordPress files into the volume on first start only; WordPress then updates
@@ -113,8 +114,10 @@ app_up_setup() {
 
 # wp_password_ok <file>: the exact bytes of the file are a password WP-CLI's one-line prompt carries
 # as it is: 1 to 255 printable ASCII characters, with no space at either end (WordPress's own profile
-# form trims those). WordPress itself has no other rule, so every password the order form allows
-# (8 to 64 printable ASCII characters) passes.
+# form trims those). WordPress itself has no other rule. Every password the order form allows passes:
+# 8 to 64 printable ASCII characters with no space at all, at least one capital letter and one
+# digit, and none of & < > " ' \ or a backtick. Any other password that fails here is replaced by a
+# generated one (wp_fallback_password_file).
 wp_password_ok() {
   local LC_ALL=C pw size
   pw="$(
@@ -167,22 +170,51 @@ wp_log_error() {
   log "wordpress: $1: $(printf '%s' "$msg" | tail -c 400)"
 }
 
-# app_create_admin <password-file>: install WordPress with WP-CLI on the loopback stack, which
+# wp_fallback_password_file <file>: write a generated password into <file> and keep it in
+# /root/vps-apps-credentials.txt (mode 600), as the other apps do. A retry reuses the one already
+# stored there.
+wp_fallback_password_file() {
+  local cred gen
+  cred="$(p /root/vps-apps-credentials.txt)"
+  if [ -f "$cred" ]; then
+    sed -n 's/^Password: //p' "$cred" | head -n1 | tr -d '\n' >"$1"
+  fi
+  if [ ! -s "$1" ]; then
+    gen="$(wp_secret 16)" || return 1
+    printf 'Rc9%s' "$gen" >"$1"
+    (
+      umask 077
+      mkdir -p "$(dirname "$cred")"
+      printf 'WordPress admin login, generated because the password you chose cannot be used for WordPress\nLogin: %s\nPassword: %s\n' \
+        "$VA_WP_ADMIN_USER" "$(cat "$1")" | write_atomic "$cred" 0600
+    )
+  fi
+}
+
+# wp_admin_login_ok <password-file> <stderr-file>: the login check (WP_ADMIN_CHECK_PHP), with the raw
+# bytes of the file on stdin.
+wp_admin_login_ok() {
+  wp_cli eval "$WP_ADMIN_CHECK_PHP" <"$1" >/dev/null 2>"$2"
+}
+
+# wp_install_admin <password-file>: install WordPress with WP-CLI on the loopback stack, which
 # creates the admin, then keep registration closed and check that the admin logs in with the
 # password. wp core install leaves a site that is installed already as it is ("WordPress is already
-# installed.", exit 0), so a retry is safe, and the login check then proves it holds this password.
+# installed.", exit 0), so it never changes the password on a retry. When the login check fails, the
+# admin password is set again from the file and the check runs once more; only that check passing
+# ends the step. So a retry repairs a stored password that does not log in.
 #   - The password goes to wp core install's documented --prompt=admin_password on stdin
 #     (https://developer.wordpress.org/cli/commands/core/install/), as one line. WP-CLI reads it
 #     with readline, which can echo it, so the command's stdout is never kept. Without an answer,
 #     WP-CLI would make up a password and print it: the login check fails that case.
+#   - The repair is wp user update with --prompt=user_pass, WP-CLI's global prompt for the command's
+#     own --user_pass (https://developer.wordpress.org/cli/commands/user/update/), on stdin the same
+#     way. It slashes the value as wp core install does, and --skip-email sends no password-change
+#     email.
 #   - users_can_register is WordPress's "Anyone can register" setting, 0 on a new site; it is set to
 #     0 explicitly so no open signup ever depends on a default.
-app_create_admin() {
+wp_install_admin() {
   local pwfile="$1" err pw
-  if ! wp_password_ok "$pwfile"; then
-    log "wordpress: the password must be 1 to 255 printable ASCII characters, without a space at either end"
-    return 1
-  fi
   wp_wait_for_web || return 1
   err="$(mktemp)"
   pw="$(cat "$pwfile")"
@@ -197,12 +229,44 @@ app_create_admin() {
     rm -f "$err"
     return 1
   fi
-  if ! wp_cli eval "$WP_ADMIN_CHECK_PHP" <"$pwfile" >/dev/null 2>"$err"; then
-    wp_log_error "the admin cannot log in with the chosen password" "$err" "$pwfile"
-    rm -f "$err"
-    return 1
+  if ! wp_admin_login_ok "$pwfile" "$err"; then
+    wp_log_error "the login check failed, setting the admin password again from the password file" "$err" "$pwfile"
+    if ! wp_cli user update "$VA_WP_ADMIN_USER" --skip-email --prompt=user_pass <<<"$pw" >/dev/null 2>"$err"; then
+      wp_log_error "setting the admin password again failed" "$err" "$pwfile"
+      rm -f "$err"
+      return 1
+    fi
+    if ! wp_admin_login_ok "$pwfile" "$err"; then
+      wp_log_error "the admin cannot log in with the password" "$err" "$pwfile"
+      rm -f "$err"
+      return 1
+    fi
   fi
   rm -f "$err"
+}
+
+# app_create_admin <password-file>: the admin through wp_install_admin. A password WP-CLI's prompt
+# cannot carry (wp_password_ok) is replaced by a generated one in /root/vps-apps-credentials.txt.
+# Once that file exists, a retry uses its password, so the file always holds the login that works.
+app_create_admin() {
+  local pwfile="$1" tmp rc=0
+  tmp="$(mktemp "$(app_data_dir)/.admin-pw.XXXXXX")" || return 1
+  chmod 600 "$tmp"
+  if [ -f "$(p /root/vps-apps-credentials.txt)" ]; then
+    log "wordpress: a generated password is already in /root/vps-apps-credentials.txt, using it"
+    pwfile="$tmp"
+  elif ! wp_password_ok "$pwfile"; then
+    log "wordpress: the chosen password cannot be used for WordPress (1 to 255 printable ASCII characters, without a space at either end), using a generated one"
+    pwfile="$tmp"
+  fi
+  if [ "$pwfile" = "$tmp" ] && ! { wp_fallback_password_file "$tmp" && wp_password_ok "$tmp"; }; then
+    log "wordpress: no usable generated password"
+    rc=1
+  else
+    wp_install_admin "$pwfile" || rc=$?
+  fi
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # wp_is_installed: WordPress says it is installed (wp core is-installed: is_blog_installed(), the

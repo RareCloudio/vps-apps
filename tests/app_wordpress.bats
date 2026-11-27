@@ -41,8 +41,10 @@ setup() {
 #   core is-installed   0 when installed
 #   option get|update   the options in $WP/option.<name>; users_can_register is 0 by default
 #   eval                0 when its stdin is, byte for byte, the stored password
-# WP_INSTALL_RC, WP_EVAL_RC and WP_OPTION_GET override an answer; DOCKER_FAIL_MATCH fails any call
-# whose command line contains it. The stdin of each run call is kept in $WP/stdin.<n>.
+#   user update         on an installed site, reads the password as the prompt does (one line),
+#                       stores it and echoes the line to stdout; "No valid users found." otherwise
+# WP_INSTALL_RC, WP_EVAL_RC, WP_UPDATE_RC and WP_OPTION_GET override an answer; DOCKER_FAIL_MATCH
+# fails any call whose command line contains it. The stdin of each run call is kept in $WP/stdin.<n>.
 stub_docker() {
   docker() {
     local a seen=no n line
@@ -109,6 +111,21 @@ stub_docker() {
           return "$WP_EVAL_RC"
         fi
         [ -f "$WP/admin_password" ] && cmp -s "$WP/stdin.$n" "$WP/admin_password"
+        ;;
+      "user update")
+        if [ -n "${WP_UPDATE_RC:-}" ]; then
+          printf '%s\n' "Error: cannot update: $(cat "$WP/stdin.$n")" >&2
+          return "$WP_UPDATE_RC"
+        fi
+        if [ ! -e "$WP/installed" ]; then
+          echo "Error: No valid users found." >&2
+          return 1
+        fi
+        line=""
+        IFS= read -r line <"$WP/stdin.$n" || true
+        printf '1/1 [--user_pass=<password>]: %s\n' "$line"
+        printf '%s' "$line" >"$WP/admin_password"
+        echo "Success: Updated user 1."
         ;;
     esac
   }
@@ -530,13 +547,15 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
   [ -z "$output" ]
 }
 
-@test "a login check that fails fails the step" {
+@test "a login check that still fails after the password is set again fails the step, with one reset" {
   app_prepare
   stub_docker
   stub_curl
   WP_EVAL_RC=1 run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
   grep -qF 'wordpress: the admin cannot log in' "$(p /var/log/vps-apps-install.log)"
+  [ "$(wp_runs 'user update ' | wc -l)" -eq 1 ]
+  [ "$(wp_runs 'eval ' | wc -l)" -eq 2 ]
 }
 
 @test "a docker failure on the registration setting fails the step" {
@@ -557,16 +576,77 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
   cmp "$WP/admin_password" "$BATS_TEST_TMPDIR/first"
   [ "$(wp_runs 'core install ' | wc -l)" -eq 2 ]
   [ "$(wp_runs 'eval ' | wc -l)" -eq 2 ]
+  # The login works, so the password is not set again.
+  run wp_runs 'user update '
+  [ -z "$output" ]
 }
 
-@test "a retry with another password fails instead of passing on the old admin" {
+@test "a retry repairs a stored password that fails the login check, from the password file on stdin" {
+  app_prepare
+  stub_docker
+  stub_curl
+  app_create_admin "$PWF"
+  # The site is installed, but the admin's stored password is not the one in the file.
+  printf '%s' 'Broken-stored-1' >"$WP/admin_password"
+  runs_before="$(cat "$WP/runs")"
+  : >"$EVENTS"
+  : >"$DOCKER_ARGV"
+  app_create_admin "$PWF"
+  cmp "$WP/admin_password" "$PWF"
+  run wp_runs 'user update '
+  [ "${#lines[@]}" -eq 1 ]
+  [[ "$output" == *" run --rm -T cli wp user update admin --skip-email --prompt=user_pass" ]]
+  refute_grep -qE -- '^--user_pass=' "$DOCKER_ARGV"
+  # The stub echoes the prompt answer to stdout, as readline can: that output is never kept.
+  refute_grep -qF 'Secret123' "$DOCKER_ARGV" "$EVENTS" "$(p /var/log/vps-apps-install.log)"
+  # The prompt reads one line: the exact bytes and a newline.
+  k="$(grep -c ' run ' <(head -n "$(line_of 'cli wp user update ')" "$EVENTS"))"
+  printf '%s\n' 'Secret123' >"$BATS_TEST_TMPDIR/want"
+  cmp "$WP/stdin.$((runs_before + k))" "$BATS_TEST_TMPDIR/want"
+}
+
+@test "after the password is set again the login is checked again, and only that check ends the step" {
+  app_prepare
+  stub_docker
+  stub_curl
+  app_create_admin "$PWF"
+  printf '%s' 'Broken-stored-1' >"$WP/admin_password"
+  : >"$EVENTS"
+  app_create_admin "$PWF"
+  [ "$(wp_runs 'eval ' | wc -l)" -eq 2 ]
+  first_eval="$(line_of 'cli wp eval ')"
+  reset="$(line_of 'cli wp user update ')"
+  second_eval="$(grep -nE 'cli wp eval ' "$EVENTS" | tail -n1 | cut -d: -f1)"
+  [ "$first_eval" -lt "$reset" ] && [ "$reset" -lt "$second_eval" ]
+  # The last WP-CLI call is that check, with the raw password on stdin.
+  [ "$(grep -n ' run ' "$EVENTS" | tail -n1 | cut -d: -f1)" -eq "$second_eval" ]
+  cmp "$WP/stdin.$(cat "$WP/runs")" "$PWF"
+}
+
+@test "a retry with another password sets the admin to that password" {
   app_prepare
   stub_docker
   stub_curl
   app_create_admin "$PWF"
   printf '%s' 'Other12345' >"$PWF"
-  run app_create_admin "$PWF"
+  app_create_admin "$PWF"
+  [ "$(cat "$WP/admin_password")" = Other12345 ]
+}
+
+@test "a failing password reset fails the step, runs no second check and keeps the password out of the log" {
+  app_prepare
+  stub_docker
+  stub_curl
+  printf '%s' 'Zq9UniqueSecret' >"$PWF"
+  app_create_admin "$PWF"
+  printf '%s' 'Broken-stored-1' >"$WP/admin_password"
+  : >"$EVENTS"
+  WP_UPDATE_RC=1 run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
+  [ "$(wp_runs 'eval ' | wc -l)" -eq 1 ]
+  grep -qF 'wordpress: setting the admin password again failed' "$(p /var/log/vps-apps-install.log)"
+  grep -qF 'Error: cannot update: <password>' "$(p /var/log/vps-apps-install.log)"
+  refute_grep -qF 'Zq9UniqueS' "$(p /var/log/vps-apps-install.log)"
 }
 
 @test "app_create_admin waits for WordPress on loopback, bounded, before any WP-CLI call" {
@@ -599,26 +679,50 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
     printf '%s' "$good" >"$PWF"
     app_create_admin "$PWF"
     [ "$(cat "$WP/admin_password")" = "$good" ]
+    [ ! -e "$(p /root/vps-apps-credentials.txt)" ]
   done
   [ "${#good}" -gt 8 ]
 }
 
-@test "a password WP-CLI's one-line prompt cannot carry is refused before any docker call" {
+@test "a password WP-CLI's one-line prompt cannot carry is replaced by a generated one in the credentials file" {
   app_prepare
   stub_docker
   stub_curl
+  cred="$(p /root/vps-apps-credentials.txt)"
   for bad in '' $'Pass\nword1X' $'Tab\tPass1' 'Pässword1x' ' Lead1space' 'Trail1space ' \
-    "$(printf 'A1%.0s' $(seq 128))"; do
-    printf '%s' "$bad" >"$PWF"
-    : >"$EVENTS"
-    run app_create_admin "$PWF"
-    [ "$status" -ne 0 ]
-    refute_grep -q '^docker ' "$EVENTS"
+    "$(printf 'A1%.0s' $(seq 128))" NUL; do
+    if [ "$bad" = NUL ]; then printf 'Abc1\0def' >"$PWF"; else printf '%s' "$bad" >"$PWF"; fi
+    rm -f "$WP/installed" "$cred"
+    : >"$DOCKER_ARGV"
+    app_create_admin "$PWF"
+    [ "$(stat -c %a "$cred")" = 600 ]
+    sent="$(cat "$WP/admin_password")"
+    [[ "$sent" =~ ^Rc9[0-9a-f]{32}$ ]]
+    grep -qxF "Password: $sent" "$cred"
+    grep -qxF 'Login: admin' "$cred"
+    refute_grep -qF "$sent" "$DOCKER_ARGV" "$(p /var/log/vps-apps-install.log)"
   done
-  printf 'Abc1\0def' >"$PWF"
-  run app_create_admin "$PWF"
-  [ "$status" -ne 0 ]
-  refute_grep -q '^docker ' "$EVENTS"
+  grep -qF 'wordpress: the chosen password cannot be used for WordPress' "$(p /var/log/vps-apps-install.log)"
+  # The generated password lives only in the credentials file: no copy is left in the data dir.
+  run grep -rlF "$sent" "$DATA"
+  [ -z "$output" ]
+}
+
+@test "a retry after a fallback keeps the credentials file and uses the password in it" {
+  app_prepare
+  stub_docker
+  stub_curl
+  cred="$(p /root/vps-apps-credentials.txt)"
+  printf '%s' ' Lead1space' >"$PWF"
+  app_create_admin "$PWF"
+  cp "$cred" "$BATS_TEST_TMPDIR/cred1"
+  sent="$(cat "$WP/admin_password")"
+  # Even a password WordPress could take now: the file holds the login that works.
+  printf '%s' 'Secret123' >"$PWF"
+  app_create_admin "$PWF"
+  cmp "$cred" "$BATS_TEST_TMPDIR/cred1"
+  [ "$(cat "$WP/admin_password")" = "$sent" ]
+  cmp "$WP/stdin.$(cat "$WP/runs")" <(printf '%s' "$sent")
 }
 
 @test "app_expose writes the marker, puts the site in app mode and starts the expose file" {

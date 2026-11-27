@@ -102,7 +102,7 @@ Forgejo runs from its `15-rootless` tag, the long-term support release (supporte
 
 ### wordpress
 
-WordPress on MariaDB. The site and its admin account (login `admin`, with your password) are set up before WordPress is reachable from the internet, so nobody else can run its installer. The admin email is your `--admin-email`, or `admin@<your host>`. Registration stays off. Log in at `https://<your host>/wp-admin/`. Your password can be up to 255 printable ASCII characters, without a space at either end.
+WordPress on MariaDB. The site and its admin account (login `admin`, with your password) are set up before WordPress is reachable from the internet, so nobody else can run its installer. The admin email is your `--admin-email`, or `admin@<your host>`. Registration stays off. Log in at `https://<your host>/wp-admin/`. If your password is not 1 to 255 printable ASCII characters without a space at either end, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
 
 WordPress runs on PHP 8.4 (the `php8.4-apache` tag) and MariaDB 12.3, its long-term support series. The database passwords and WordPress's keys and salts are generated on the server, and uploads can be up to 64 MB.
 
