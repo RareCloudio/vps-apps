@@ -174,7 +174,7 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
     grep -Eq "^$k=[0-9a-f]{64}\$" "$DATA/.env"
   done
   # Ten secrets, ten different values.
-  [ "$(grep -E '^(DB_PASSWORD|DB_ROOT_PASSWORD|WORDPRESS_[A-Z_]+)=' "$DATA/.env" | cut -d= -f2 | sort -u | wc -l)" -eq 10 ]
+  [ "$(grep -E '^(DB_PASSWORD|DB_ROOT_PASSWORD|WORDPRESS_[A-Z_]+_(KEY|SALT))=' "$DATA/.env" | cut -d= -f2 | sort -u | wc -l)" -eq 10 ]
   cp "$DATA/.env" "$BATS_TEST_TMPDIR/first"
   app_prepare
   cmp "$DATA/.env" "$BATS_TEST_TMPDIR/first"
