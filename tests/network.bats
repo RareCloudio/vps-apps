@@ -213,6 +213,8 @@ YAML
   [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 3 ]
   grep -qxF -- '-6 route replace default via 2a06:a880:5::1 dev eth0 onlink' "$STUB_TMP/ip.log"
   grep -qxF -- '-6 route replace default via 2a06:a880:5::1 dev eth1 onlink' "$STUB_TMP/ip.log"
+  # IPv6 is checked once before the first live route (and once at the end), not again per device.
+  [ "$(grep -c . "$STUB_TMP/ping.log")" -eq 2 ]
 }
 
 @test "netplan that is invalid before any change: no file is changed, and the step still succeeds" {
@@ -330,11 +332,40 @@ YAML
   network_step
   [ "$status" -eq 0 ]
   [ "$(cat "$STUB_TMP/ping.log")" = "-6 -c1 -W3 2606:4700:4700::1111" ]
-  grep -qF 'network: IPv6 ping to 2606:4700:4700::1111 answered' "$LOG"
-  echo 1 >"$STUB_TMP/ping_rc"
+  grep -qF 'network: IPv6 ping to 2606:4700:4700::1111 got no reply' "$LOG"
+  echo 0 >"$STUB_TMP/ping_rc"
   network_step
   [ "$status" -eq 0 ]
-  grep -qF 'network: IPv6 ping to 2606:4700:4700::1111 got no reply' "$LOG"
+  grep -qF 'network: IPv6 ping to 2606:4700:4700::1111 answered' "$LOG"
+}
+
+@test "IPv6 that answers already (a route from RA, say) gets the file fix but no live route" {
+  virt_file
+  echo 0 >"$STUB_TMP/ping_rc"
+  network_step
+  [ "$status" -eq 0 ]
+  grep -qx '          on-link: true' "$VIRT"
+  [ ! -e "$STUB_TMP/ip.log" ]
+  [ "$(sed -n 1p "$STUB_TMP/ping.log")" = "-6 -c1 -W3 2606:4700:4700::1111" ]
+  grep -qF 'network: IPv6 already answers, so the live route via 2a06:a880:5::1 on eth0 is not added; netplan sets it up at the next boot' "$LOG"
+}
+
+@test "a route with table, metric, from, type or scope gets the file fix but no live route" {
+  virt_file
+  sed -i 's/^          via: 2a06:a880:5::1$/&\n          metric: 100\n          table: 200/' "$VIRT"
+  local k
+  for k in from type scope; do
+    sed "s/eth0:/$k-if:/; s/^          metric: 100\$/          $k: x/; /^          table: 200\$/d" "$VIRT" >"$NETPLAN/99-$k.yaml"
+  done
+  network_step
+  [ "$status" -eq 0 ]
+  grep -qx '          on-link: true' "$VIRT"
+  [ ! -e "$STUB_TMP/ip.log" ]
+  grep -qF 'network: the route via 2a06:a880:5::1 on eth0 has metric, table, so the live route is not added; netplan sets it up at the next boot' "$LOG"
+  for k in from type scope; do
+    grep -qx '          on-link: true' "$NETPLAN/99-$k.yaml"
+    grep -qF "network: the route via 2a06:a880:5::1 on $k-if has $k, so the live route is not added" "$LOG"
+  done
 }
 
 @test "without python3 the step says so, changes nothing and succeeds" {

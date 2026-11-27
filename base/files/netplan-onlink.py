@@ -15,16 +15,19 @@ reader follows the block style netplan files are written in (mappings and lists 
 flow lists of scalars such as "addresses: [a, b]"). A route written in flow style is left alone.
 
 When a route needs the flag, the new content goes to the output file and one line
-"<device> <gateway>" is printed for each device and gateway (the device is the interface's
-set-name when it has one, else its netplan id). When nothing needs it, nothing is printed and the
-output file is not written. Exit 0 either way; 1 when the file cannot be read or the output cannot
-be written. Python standard library only.
+"<device> <gateway> [<keys>]" is printed for each such route (the device is the interface's
+set-name when it has one, else its netplan id). <keys> lists, comma-separated, the LIVE_KEYS the
+route has: a plain live route for it would not be the route netplan sets up. When nothing needs
+the flag, nothing is printed and the output file is not written. Exit 0 either way; 1 when the
+file cannot be read or the output cannot be written. Python standard library only.
 """
 
 import ipaddress
 import sys
 
 ANY6 = ipaddress.IPv6Network("::/0")
+# Route keys that make the route more than a plain default route on the main table.
+LIVE_KEYS = ("from", "metric", "scope", "table", "type")
 
 
 class Entry:
@@ -168,7 +171,7 @@ def is_default6(to):
 
 
 def fixes(ifaces):
-    """(via line index, via column, device, gateway) for each route that needs on-link."""
+    """(via line index, via column, device, gateway, LIVE_KEYS present) per route that needs on-link."""
     out = []
     for iface in ifaces.values():
         nets = []
@@ -190,7 +193,8 @@ def fixes(ifaces):
                 continue
             if gw.is_link_local or gw.is_multicast or gw.is_unspecified or any(gw in n for n in nets):
                 continue
-            out.append((route["@line"], route["@col"], iface.set_name or iface.ident, route["via"]))
+            keys = ",".join(k for k in LIVE_KEYS if k in route)
+            out.append((route["@line"], route["@col"], iface.set_name or iface.ident, route["via"], keys))
     return out
 
 
@@ -216,7 +220,7 @@ def main(argv):
     found = fixes(parse(lines))
     if not found:
         return 0
-    for line, col, _, _ in sorted(found, reverse=True):
+    for line, col, _, _, _ in sorted(found, reverse=True):
         via = lines[line]
         body = via.rstrip("\r\n")
         end = via[len(body):]
@@ -232,10 +236,10 @@ def main(argv):
         sys.stderr.write("netplan-onlink: %s\n" % e)
         return 1
     seen = []
-    for _, _, device, gw in found:
-        if (device, gw) not in seen:
-            seen.append((device, gw))
-            print(device, gw)
+    for _, _, device, gw, keys in found:
+        if (device, gw, keys) not in seen:
+            seen.append((device, gw, keys))
+            print(" ".join(w for w in (device, gw, keys) if w))
     return 0
 
 
