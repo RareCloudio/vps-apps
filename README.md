@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml/badge.svg)](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml)
 
-Turn a fresh Ubuntu 24.04 server into a properly set up Docker server or n8n server, with HTTPS and an admin account, in minutes.
+Turn a fresh Ubuntu 24.04 server into a properly set up app server, with HTTPS and an admin account, in minutes: a Docker server, or n8n, Nextcloud, Forgejo, WordPress or Uptime Kuma.
 
 You get:
 
@@ -36,12 +36,12 @@ Arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `--app` | `docker` or `n8n` |
+| `--app` | `docker`, `n8n`, `nextcloud`, `forgejo`, `wordpress` or `uptimekuma` |
 | `--host` | A domain name for this server. Point its A record at the server. The installer waits up to five minutes for the name to resolve before it asks for a certificate. |
 | `--ip` | The server's public IPv4 address |
-| `--password-file` | Required for both apps. A file with the admin password; n8n uses it for the owner login, the Docker app does not use it. Delete it once the install is ready. |
+| `--password-file` | Required for every app. A file with the admin password, for the app's first login: the n8n owner (your `--admin-email`), the user `admin` in Nextcloud, WordPress and Uptime Kuma, and the user `gitadmin` in Forgejo. The Docker app does not use it. Delete it once the install is ready. |
 | `--mode` | n8n only: `starter` (default) or `pro` |
-| `--admin-email` | Optional. The email for the n8n owner login. Without it, or when it is not a plain address, the login is `admin@<your host>`. |
+| `--admin-email` | Optional. The n8n owner login, and the WordPress admin's email. Without it, or when it is not a plain address, it is `admin@<your host>`. |
 
 It exits 0 when the app is ready, 1 when a step failed (run it again, finished steps are skipped), 2 for bad arguments and 3 on any other OS than Ubuntu 24.04.
 
@@ -74,6 +74,59 @@ On a server installed before n8n ran on UTC, schedules move from America/New_Yor
 
 `rc update` keeps n8n on the major version it runs, because n8n's database migrations only go forward. When `stable` moves to a new major version, n8n moves to the newest release of its current major instead, and `rc update` says so. If that release cannot be found, n8n keeps its current image. Moving to a new major version with `rc` is not supported yet.
 
+### nextcloud
+
+Nextcloud on Postgres, with Valkey for caching and file locking. Nextcloud is installed and its admin account (login `admin`, with your password) is created before Nextcloud is reachable from the internet, and nobody can sign up. If your password does not meet Nextcloud's password policy (at least 10 characters, not a common or leaked password), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+
+Background jobs run every five minutes in their own container (cron mode). Calendar and contacts apps find CalDAV and CardDAV on their own, through the standard well-known addresses.
+
+Add more domains with `rc domain add <domain>`. Nextcloud trusts and serves every name, and the newest one becomes the address in the links that background jobs write (`overwrite.cli.url`).
+
+Nextcloud runs from its `34-apache` tag. `rc update` moves it to the newest 34.x release and never to another major version, because Nextcloud upgrades one major version at a time. Back up the `vps-apps-nextcloud_nextcloud_data` and `vps-apps-nextcloud_postgres_data` volumes.
+
+### forgejo
+
+Forgejo, a self-hosted Git service, on SQLite. The admin account `gitadmin` (Forgejo reserves `admin`), with your password and the email `admin@<your host>`, is created before Forgejo is reachable from the internet, and nobody can sign up. If your password is not 8 to 255 characters long, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+
+Git over SSH runs on port 2222, which the installer opens in the firewall:
+
+```bash
+git clone ssh://git@<your host>:2222/<owner>/<repo>.git
+```
+
+Every page needs a login. To show public repositories to visitors, set `FORGEJO_REQUIRE_SIGNIN_VIEW=false` in `/opt/vps-apps-data/forgejo/.env` and run `rc update`.
+
+Add more domains with `rc domain add <domain>`. The newest one becomes Forgejo's main address, used in links and clone URLs, and every earlier name keeps working.
+
+Forgejo runs from its `15-rootless` tag, the long-term support release (supported until July 2027), and `rc update` keeps it on 15. Back up the `vps-apps-forgejo_forgejo_data` volume.
+
+### wordpress
+
+WordPress on MariaDB. The site and its admin account (login `admin`, with your password) are set up before WordPress is reachable from the internet, so nobody else can run its installer. The admin email is your `--admin-email`, or `admin@<your host>`. Registration stays off. Log in at `https://<your host>/wp-admin/`. Your password can be up to 255 printable ASCII characters, without a space at either end.
+
+WordPress runs on PHP 8.4 (the `php8.4-apache` tag) and MariaDB 12.3, its long-term support series. The database passwords and WordPress's keys and salts are generated on the server, and uploads can be up to 64 MB.
+
+WP-CLI is included:
+
+```bash
+cd /opt/vps-apps/current/apps/wordpress
+docker compose -f compose.yml -f compose.expose.yml --env-file /opt/vps-apps-data/wordpress/.env run --rm cli wp <command>
+```
+
+WordPress updates itself. `rc update` keeps PHP 8.4, MariaDB 12.3 and WP-CLI 2.x on their newest patch releases.
+
+WordPress has one address, your host. Moving a site to another domain changes the links stored in its database, so `rc domain add` refuses on a WordPress server. Back up the `vps-apps-wordpress_wordpress_data` and `vps-apps-wordpress_db_data` volumes.
+
+### uptimekuma
+
+Uptime Kuma 2 on SQLite. The admin account (login `admin`, with your password) is created before Uptime Kuma is reachable from the internet, so nobody else can claim it. If your password does not meet Uptime Kuma's rule (at least 6 characters, with two of: lowercase letters, capital letters, digits, symbols), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+
+Uptime Kuma trusts the proxy's headers, so it sees each visitor's real address, and its Primary Base URL, used in notification links, is set to your domain.
+
+Add more domains with `rc domain add <domain>`. Every name serves Uptime Kuma; a status page is shown on the names you map to it in that status page's own settings.
+
+`rc update` keeps Uptime Kuma on version 2. Moving to version 3 needs a manual migration. Back up the `vps-apps-uptimekuma_uptime_kuma_data` volume.
+
 ## The `rc` command
 
 ```text
@@ -83,16 +136,16 @@ rc update                       refresh each image to its tag's newest digest an
 rc port open <port>[/udp]       open a port (SSH, 80 and 443 are always open)
 rc port close <port>[/udp]      close it again
 rc port list                    show open ports
-rc domain add <domain>          serve n8n on one more domain
+rc domain add <domain>          serve the app on one more domain
 ```
 
-On the Docker server, extra domains go on your own containers with the labels above.
+On the Docker server, extra domains go on your own containers with the labels above. WordPress serves one address only, so `rc domain add` refuses there.
 
 ## How it works
 
 The installer runs a fixed list of steps: network (an IPv6 gateway outside the server's own prefix gets the on-link flag it needs, at install and at every boot, so IPv6 works), packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
-Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `stable` tag within its major version. On n8n, the database password, the encryption key and the Valkey password are generated on the server, once, and stay there. On an n8n server installed by an earlier release, `rc update` also adds the settings that release did not have to the `.env`, and keeps every value already there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
+Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `stable` tag within its major version. On n8n, the database password, the encryption key and the Valkey password are generated on the server, once, and stay there. On an n8n server installed by an earlier release, `rc update` also adds the settings that release did not have to the `.env`, and keeps every value already there. App data and the proxy's certificates live in Docker named volumes, so back those up.
 
 ## Move a server to newer code
 
