@@ -197,6 +197,28 @@ merged_config() {
   [ "$(jq -r '.services.n8n.environment.TZ' <<<"$cfg")" = UTC ]
 }
 
+N8N_SECURITY_SETTINGS=(N8N_BLOCK_ENV_ACCESS_IN_NODE=true N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+  N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true N8N_SKIP_AUTH_ON_OAUTH_CALLBACK=false)
+
+@test "n8n and its workers get the 2.x security settings explicitly, from the .env" {
+  VA_MODE=pro app_prepare
+  cfg="$(merged_config compose.yml compose.pro.yml compose.expose.yml)"
+  for kv in "${N8N_SECURITY_SETTINGS[@]}"; do
+    grep -qxF "$kv" "$DATA/.env"
+    for s in n8n n8n-worker; do
+      [ "$(jq -r --arg s "$s" --arg k "${kv%%=*}" '.services[$s].environment[$k]' <<<"$cfg")" = "${kv#*=}" ]
+    done
+  done
+  # The same values when an .env written before these keys existed is used.
+  sed -i -E '/^N8N_(BLOCK_ENV_ACCESS_IN_NODE|GIT_NODE_DISABLE_BARE_REPOS|ENFORCE_SETTINGS_FILE_PERMISSIONS|SKIP_AUTH_ON_OAUTH_CALLBACK)=/d' "$DATA/.env"
+  cfg="$(merged_config compose.yml compose.setup.yml)"
+  for kv in "${N8N_SECURITY_SETTINGS[@]}"; do
+    [ "$(jq -r --arg k "${kv%%=*}" '.services.n8n.environment[$k]' <<<"$cfg")" = "${kv#*=}" ]
+  done
+  # NODES_EXCLUDE stays n8n's own default.
+  refute_grep -q NODES_EXCLUDE "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl"
+}
+
 @test "starter mode config has neither valkey nor EXECUTIONS_MODE" {
   app_prepare
   cfg="$(merged_config compose.yml compose.setup.yml)"

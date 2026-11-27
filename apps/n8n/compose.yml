@@ -43,6 +43,13 @@ services:
       # cover an .env written before these keys existed.
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
       TZ: ${TZ:-UTC}
+      # n8n 2.x security settings, set explicitly so a change of n8n's defaults cannot loosen them:
+      # no $env access from nodes, no bare repositories in the Git node, a settings file only its
+      # owner can read, and OAuth callbacks that need a login.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: ${N8N_BLOCK_ENV_ACCESS_IN_NODE:-true}
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: ${N8N_GIT_NODE_DISABLE_BARE_REPOS:-true}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-true}
+      N8N_SKIP_AUTH_ON_OAUTH_CALLBACK: ${N8N_SKIP_AUTH_ON_OAUTH_CALLBACK:-false}
     volumes:
       - n8n_data:/home/node/.n8n
 
