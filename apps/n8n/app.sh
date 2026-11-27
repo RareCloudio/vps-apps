@@ -373,8 +373,8 @@ n8n_newest_release() {
 # line of <out-file> (the resolved .env) is the image the tag points to now. That image is kept when
 # it is of the installed major and not older. Otherwise N8N_IMAGE becomes the newest full release of
 # the installed major when GitHub lists one that is not older, or else stays the image the server
-# runs. Says what it did. Any doubt keeps n8n where it is; it fails only when <out-file> cannot be
-# written.
+# runs. Says what it did on stdout, which rc update prints once both .env files are written. Any
+# doubt keeps n8n where it is; it fails only when <out-file> cannot be written.
 n8n_hold_major() {
   local cur new tag have want major newest pinned image
   cur="$(n8n_env_get "$1" N8N_IMAGE)"
@@ -397,8 +397,12 @@ n8n_hold_major() {
     fi
   else
     major="${have%%.*}"
-    echo "rc update: n8n $want is out, a new major version. rc update does not move n8n to a new major" \
-      "version yet, so this server stays on n8n $major.x"
+    if [ "${want%%.*}" -lt "$major" ]; then
+      echo "rc update: the $tag tag points to n8n $want, an older major version, so this server stays on n8n $major.x"
+    else
+      echo "rc update: n8n $want is out, a new major version. rc update does not move n8n to a new major" \
+        "version yet, so this server stays on n8n $major.x"
+    fi
     if newest="$(n8n_newest_release "$major")" && n8n_version_ge "$newest" "$have" &&
       pinned="$(resolve_image_digest "${cur%@*}:$newest")" && [ "$(n8n_image_version "$pinned")" = "$newest" ]; then
       image="$pinned"
