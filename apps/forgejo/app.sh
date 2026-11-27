@@ -305,9 +305,11 @@ forgejo_make_admin() {
 # password from the file. A password that breaks Forgejo's rule (by our check or by Forgejo's own
 # 400) is replaced by a generated one in /root/vps-apps-credentials.txt. Every step can run again: an
 # existing admin is reused, its password set again, and every setup token deleted. The work files
-# (token, credential, answers) live in a 0700 directory removed at the end.
+# (token, credential, answers) live in a 0700 directory removed at the end; one a killed run left
+# is removed first.
 app_create_admin() {
   local work rc=0
+  rm -rf "$(app_data_dir)"/.admin.*
   work="$(mktemp -d "$(app_data_dir)/.admin.XXXXXX")" || return 1
   (
     umask 077

@@ -498,6 +498,15 @@ server_pw() {
   [ ! -e "$(p /root/vps-apps-credentials.txt)" ]
 }
 
+@test "the work files of a killed run (a token header) are removed by the next run" {
+  app_prepare
+  mkdir -m 700 "$DATA/.admin.Killed"
+  printf 'Authorization: token %s\n' "$(printf 'b%.0s' $(seq 40))" >"$DATA/.admin.Killed/token"
+  app_create_admin "$PWF"
+  [ ! -e "$DATA/.admin.Killed" ]
+  [ "$(find "$DATA" -mindepth 1 ! -name .env | wc -l)" -eq 0 ]
+}
+
 @test "a second run is idempotent: no second user, the same password, no token left" {
   app_prepare
   app_create_admin "$PWF"
