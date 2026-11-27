@@ -113,6 +113,33 @@ run_driver() {
   [ "$(grep -c '^ready_check' "$CALLS")" -eq 1 ]
 }
 
+@test "a second run on a ready server changes nothing: no step, no status write, no ready check" {
+  run_driver
+  [ "$status" -eq 0 ]
+  local inode
+  inode="$(stat -c %i "$STATUS_FILE")"
+  cp "$VPS_APPS_ROOT/etc/vps-apps/app.env" "$BATS_TEST_TMPDIR/app.env.before"
+  : >"$CALLS"
+  run_driver
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS" ]
+  [ "$(cat "$STATUS_FILE")" = ready ]
+  [ "$(stat -c %i "$STATUS_FILE")" = "$inode" ]
+  cmp "$VPS_APPS_ROOT/etc/vps-apps/app.env" "$BATS_TEST_TMPDIR/app.env.before"
+  grep -q 'install.sh: already ready' "$VPS_APPS_ROOT/var/log/vps-apps-install.log"
+}
+
+@test "a ready status with a step marker missing runs that step again and ends ready" {
+  run_driver
+  [ "$status" -eq 0 ]
+  rm "$VPS_APPS_ROOT/var/lib/vps-apps/steps/motd.done"
+  : >"$CALLS"
+  run_driver
+  [ "$status" -eq 0 ]
+  [ "$(tr '\n' ' ' <"$CALLS")" = "motd ready_check status=installing " ]
+  [ "$(cat "$STATUS_FILE")" = ready ]
+}
+
 @test "a second run after failed:firewall starts again at firewall" {
   run_driver EXTRA='base_firewall() { echo firewall >>"'"$CALLS"'"; return 1; }'
   [ "$status" -eq 1 ]
@@ -234,6 +261,10 @@ for fn in base_packages base_swap base_sysctl base_docker base_firewall base_pro
   step_app_create_admin wait_until_ready set_status run_step set_site_mode compose_run; do
   declare -F "\$fn" >/dev/null || { echo "missing \$fn"; exit 1; }
 done
+for s in "\${VA_STEPS[@]}"; do
+  declare -F "\${s#*:}" >/dev/null || { echo "missing step function \$s"; exit 1; }
+done
+[ "\${#VA_STEPS[@]}" -eq 12 ]
 RS
   run bash "$BATS_TEST_TMPDIR/real.sh"
   [ "$status" -eq 0 ]

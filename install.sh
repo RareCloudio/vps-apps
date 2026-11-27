@@ -185,29 +185,46 @@ wait_until_ready() {
   fi
 }
 
+# The steps in their order, as <name>:<function>. A finished step leaves steps/<name>.done.
+VA_STEPS=(
+  packages:base_packages swap:base_swap sysctl:base_sysctl docker:base_docker
+  firewall:base_firewall proxy:base_proxy ssh:base_ssh motd:base_motd
+  app_prepare:app_prepare app_up_setup:app_up_setup app_create_admin:step_app_create_admin
+  app_expose:app_expose
+)
+
+# already_ready: the status is ready and every step has its marker, so there is nothing to do. A
+# second run must then not write the status at all (the ready wait would show installing again).
+already_ready() {
+  local s status=""
+  [ ! -r "$(p /var/lib/vps-apps/public/.well-known/rarecloud-app-status)" ] ||
+    status="$(cat "$(p /var/lib/vps-apps/public/.well-known/rarecloud-app-status)")"
+  [ "$status" = ready ] || return 1
+  for s in "${VA_STEPS[@]}"; do
+    [ -f "$(p "/var/lib/vps-apps/steps/${s%%:*}.done")" ] || return 1
+  done
+}
+
 main() {
+  local s
   require_root
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
+  if already_ready; then
+    log "install.sh: already ready, nothing to do"
+    return 0
+  fi
   record_install
   prepare_password
   # base_proxy and the app read these.
   export VA_HOST VA_IP
   load_code
 
-  run_step packages base_packages
-  run_step swap base_swap
-  run_step sysctl base_sysctl
-  run_step docker base_docker
-  run_step firewall base_firewall
-  run_step proxy base_proxy
-  run_step ssh base_ssh
-  run_step motd base_motd
-  run_step app_prepare app_prepare
-  run_step app_up_setup app_up_setup
-  run_step app_create_admin step_app_create_admin
-  run_step app_expose app_expose
+  # run_step stays a plain command (errexit must apply to it), so a failed step ends the install.
+  for s in "${VA_STEPS[@]}"; do
+    run_step "${s%%:*}" "${s#*:}"
+  done
   wait_until_ready
   set_status ready
   log "install.sh: ready"
