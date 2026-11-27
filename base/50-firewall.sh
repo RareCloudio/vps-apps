@@ -56,9 +56,22 @@ fw_open_ports() {
   fi
 }
 
+# fw_ssh_ports: every TCP port sshd listens on, from the port and listenaddress lines of sshd -T,
+# plus 22 always; only 22 when sshd -T fails. One per line, sorted.
+fw_ssh_ports() {
+  local cfg=""
+  cfg="$(sshd -T 2>/dev/null)" || cfg=""
+  {
+    echo 22
+    awk '$1 == "port" { p = $2 }
+      $1 == "listenaddress" { n = split($2, a, ":"); p = (n > 1) ? a[n] : "" }
+      ($1 == "port" || $1 == "listenaddress") && p ~ /^[0-9]+$/ && p + 0 >= 1 && p + 0 <= 65535 { print p + 0 }' <<<"$cfg"
+  } | sort -un
+}
+
 # render_nft <open-ports-file>: print the nftables file. Fails when the template cannot be read.
 render_nft() {
-  local line entry rules="" tmpl="$VA_BASE_DIR/files/vps-apps.nft.tmpl"
+  local line entry port rules="" ssh_rules="" tmpl="$VA_BASE_DIR/files/vps-apps.nft.tmpl"
   if [ ! -r "$tmpl" ]; then
     echo "firewall: cannot read $tmpl" >&2
     return 1
@@ -67,8 +80,17 @@ render_nft() {
     rules+="    ${entry#*/} dport ${entry%/*} accept"$'\n'
   done < <(fw_open_ports "$1")
   rules="${rules%$'\n'}"
+  # 22, 80 and 443 are on the template's fixed line; sshd may listen on other ports too.
+  while IFS= read -r port; do
+    case "$port" in 22 | 80 | 443) ;; *) ssh_rules+="    tcp dport $port accept"$'\n' ;; esac
+  done < <(fw_ssh_ports)
+  ssh_rules="${ssh_rules%$'\n'}"
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$line" = "@OPEN_PORT_RULES@" ]; then
+    if [ "$line" = "@SSH_PORT_RULES@" ]; then
+      if [ -n "$ssh_rules" ]; then
+        printf '%s\n' "$ssh_rules"
+      fi
+    elif [ "$line" = "@OPEN_PORT_RULES@" ]; then
       if [ -n "$rules" ]; then
         printf '%s\n' "$rules"
       fi

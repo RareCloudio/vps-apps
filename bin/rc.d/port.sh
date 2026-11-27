@@ -29,8 +29,8 @@ rc_port_apply() {
 }
 
 rc_port() {
-  local action="${1:-}" file entry have e
-  local -a current kept
+  local action="${1:-}" file entry have e ssh_entry=no
+  local -a current kept ssh_ports
   if [ "$#" -gt 0 ]; then
     shift
   fi
@@ -40,22 +40,32 @@ rc_port() {
     *) rc_usage ;;
   esac
   file="$(p /etc/vps-apps/open-ports)"
+  # SSH stays reachable on every port sshd listens on (22 always), like the firewall renders it.
+  mapfile -t ssh_ports < <(fw_ssh_ports)
 
   if [ "$action" = list ]; then
-    printf '%s\n' 22/tcp 80/tcp 443/tcp
+    printf '%s/tcp\n' "${ssh_ports[@]}"
+    printf '%s\n' 80/tcp 443/tcp
     fw_open_ports "$file"
     return 0
   fi
 
   entry="$(rc_port_parse "$1")"
-  case "$action:$entry" in
-    open:22/tcp | open:80/tcp | open:443/tcp)
+  for e in "${ssh_ports[@]}"; do
+    [ "$entry" != "$e/tcp" ] || ssh_entry=yes
+  done
+  if [ "$ssh_entry" = yes ]; then
+    if [ "$action" = open ]; then
       echo "$entry is always open"
       return 0
-      ;;
-    close:22/tcp)
-      echo "rc port: 22/tcp carries SSH, SSH stays open" >&2
-      exit 2
+    fi
+    echo "rc port: $entry carries SSH, SSH stays open" >&2
+    exit 2
+  fi
+  case "$action:$entry" in
+    open:80/tcp | open:443/tcp)
+      echo "$entry is always open"
+      return 0
       ;;
     close:80/tcp | close:443/tcp)
       echo "rc port: 80 and 443 carry the proxy and stay open" >&2
