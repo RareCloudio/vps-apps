@@ -329,13 +329,23 @@ n8n_env_set() {
 }
 
 # n8n_image_version <image>: the n8n version (X.Y.Z) in the image's org.opencontainers.image.version
-# label, read with docker image inspect from the image on this server, which needs no network. An
-# image not on the server is pulled first, by its digest. Fails without a plain X.Y.Z.
+# label. It is read from the image on this server when it is there (docker image inspect, no
+# network), else from the registry without pulling (docker buildx imagetools inspect, the
+# linux/amd64 image). Only when the registry cannot answer is the image pulled, by its digest, and
+# inspected. Fails without a plain X.Y.Z.
 n8n_image_version() {
-  local fmt='{{index .Config.Labels "org.opencontainers.image.version"}}' v
-  v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)" ||
-    { docker pull -q "$1" >/dev/null && v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)"; } ||
-    return 1
+  local fmt='{{index .Config.Labels "org.opencontainers.image.version"}}' v="" labels
+  if ! v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)"; then
+    v=""
+    if labels="$(docker buildx imagetools inspect "$1" \
+      --format '{{json (index .Image "linux/amd64").Config.Labels}}' 2>/dev/null)" &&
+      v="$(jq -r 'if type == "object" then .["org.opencontainers.image.version"] // "" else "" end' \
+        <<<"$labels" 2>/dev/null)"; then
+      :
+    elif ! { docker pull -q "$1" >/dev/null && v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)"; }; then
+      return 1
+    fi
+  fi
   [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   printf '%s\n' "$v"
 }
