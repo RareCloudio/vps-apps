@@ -105,9 +105,18 @@ merged_config() {
   grep -Eq '^N8N_IMAGE=docker.n8n.io/n8nio/n8n@sha256:[0-9a-f]{64}$' "$DATA/.env"
   grep -Eq '^POSTGRES_IMAGE=postgres@sha256:[0-9a-f]{64}$' "$DATA/.env"
   grep -Eq '^VALKEY_IMAGE=valkey/valkey@sha256:[0-9a-f]{64}$' "$DATA/.env"
-  grep -qxF 'N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:latest' "$DATA/.env"
+  grep -qxF 'N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:stable' "$DATA/.env"
   grep -qxF 'POSTGRES_IMAGE_REF=postgres:16-alpine' "$DATA/.env"
   grep -qxF 'VALKEY_IMAGE_REF=valkey/valkey:8-alpine' "$DATA/.env"
+}
+
+@test "n8n is installed from its stable tag, resolved and pinned by digest, never from latest" {
+  app_prepare
+  grep -qxF 'buildx imagetools inspect docker.n8n.io/n8nio/n8n:stable --format {{json .Manifest}}' "$STUB_TMP/docker.log"
+  want="$(printf '%s' docker.n8n.io/n8nio/n8n:stable | sha256sum | cut -d' ' -f1)"
+  grep -qxF "N8N_IMAGE=docker.n8n.io/n8nio/n8n@sha256:$want" "$DATA/.env"
+  grep -qF 'image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:stable}' "$APP_DIR/compose.yml"
+  refute_grep -q 'n8n:latest' "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl" "$APP_DIR/app.sh"
 }
 
 @test "the URL variables use the host" {
