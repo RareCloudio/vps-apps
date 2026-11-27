@@ -23,7 +23,12 @@ load_code() {
   done
   app_prepare() { echo app_prepare >>"$CALLS"; }
   app_up_setup() { echo app_up_setup >>"$CALLS"; }
-  app_create_admin() { echo app_create_admin >>"$CALLS"; [ "\$1" = "$PWF" ]; }
+  app_create_admin() {
+    echo app_create_admin >>"$CALLS"
+    cp "\$1" "$BATS_TEST_TMPDIR/seen_pw"
+    stat -c %a "\$1" >"$BATS_TEST_TMPDIR/seen_pw_mode"
+    printf '%s' "\$1" >"$BATS_TEST_TMPDIR/seen_pw_path"
+  }
   app_expose() { echo app_expose >>"$CALLS"; printf app >"\$VPS_APPS_ROOT/var/lib/vps-apps/site-mode"; }
   app_ready_check() {
     echo "ready_check status=\$(cat "$STATUS_FILE")" >>"$CALLS"
@@ -117,6 +122,43 @@ run_driver() {
   [ "$(head -n1 "$CALLS")" = firewall ]
   refute_grep -qxE 'packages|swap|sysctl|docker' "$CALLS"
   grep -qxF app_expose "$CALLS"
+}
+
+# seen_pw_is <printf format>: the app got a password file with exactly these bytes, mode 600, a copy
+# that is gone after install.sh, while the given file is left as it was.
+seen_pw_is() {
+  printf "$1" >"$BATS_TEST_TMPDIR/want_pw"
+  cmp "$BATS_TEST_TMPDIR/seen_pw" "$BATS_TEST_TMPDIR/want_pw"
+  [ "$(cat "$BATS_TEST_TMPDIR/seen_pw_mode")" = 600 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/seen_pw_path")" != "$PWF" ]
+  [ ! -e "$(cat "$BATS_TEST_TMPDIR/seen_pw_path")" ]
+}
+
+@test "the app reads the password without the one trailing newline, from a 0600 copy that is removed" {
+  run_driver
+  [ "$status" -eq 0 ]
+  seen_pw_is 'Secret123'
+  [ "$(cat "$PWF")" = Secret123 ]
+  [ "$(wc -c <"$PWF")" -eq 10 ]
+}
+
+@test "only one trailing newline is stripped, and a file without one keeps every byte" {
+  printf 'Pw9A$x\n\n' >"$PWF"
+  run_driver
+  [ "$status" -eq 0 ]
+  seen_pw_is 'Pw9A$x\n'
+  rm -rf "$VPS_APPS_ROOT/var/lib/vps-apps/steps"
+  printf ' Pw9A\\"x ' >"$PWF"
+  run_driver
+  [ "$status" -eq 0 ]
+  seen_pw_is ' Pw9A\\"x '
+}
+
+@test "the password copy is removed when a step fails too" {
+  run_driver EXTRA='base_firewall() { [ ! -e "$VPS_APPS_ROOT/var/lib/vps-apps/.admin-password" ] || echo present >"'"$BATS_TEST_TMPDIR"'/copy_seen"; return 1; }'
+  [ "$status" -eq 1 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/copy_seen")" = present ]
+  [ ! -e "$VPS_APPS_ROOT/var/lib/vps-apps/.admin-password" ]
 }
 
 @test "a library that fails to load exits 1 (retryable), not 2" {

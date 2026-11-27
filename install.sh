@@ -83,6 +83,40 @@ parse_args() {
   fi
 }
 
+# prepare_password: the password as the apps read it, in a copy without the one trailing newline an
+# editor or `echo` adds, mode 0600 in the state dir. VA_PASSWORD_FILE then names the copy. It is
+# shredded when install.sh exits, and by the bootstrap when it finishes (in case install.sh was
+# killed). The given file itself is left as it is.
+VA_PASSWORD_COPY=""
+prepare_password() {
+  local copy last
+  copy="$(p /var/lib/vps-apps/.admin-password)"
+  mkdir -p "$(dirname "$copy")"
+  VA_PASSWORD_COPY="$copy"
+  trap remove_password_copy EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  rm -f "$copy"
+  (
+    umask 077
+    : >"$copy"
+  )
+  chmod 600 "$copy"
+  last="$(tail -c 1 "$VA_PASSWORD_FILE" | od -An -tx1 | tr -d ' \n')"
+  if [ "$last" = 0a ]; then
+    head -c -1 "$VA_PASSWORD_FILE" >"$copy"
+  else
+    cat "$VA_PASSWORD_FILE" >"$copy"
+  fi
+  VA_PASSWORD_FILE="$copy"
+}
+
+remove_password_copy() {
+  if [ -n "$VA_PASSWORD_COPY" ] && [ -e "$VA_PASSWORD_COPY" ]; then
+    shred -u "$VA_PASSWORD_COPY" 2>/dev/null || rm -f "$VA_PASSWORD_COPY"
+  fi
+}
+
 # load_code: the libraries, every base step and the chosen app. Kept in one function so a test can
 # replace it with stubs.
 load_code() {
@@ -131,6 +165,7 @@ main() {
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
+  prepare_password
   # base_proxy and the app read these.
   export VA_HOST VA_IP
   load_code
