@@ -3,6 +3,10 @@
 # derived from the ref (it fails when STUB_TMP/inspect_fail exists, or when the ref contains the
 # text in STUB_TMP/inspect_fail_match); "network inspect" fails when
 # STUB_TMP/no_web_network exists.
+# Images by digest: STUB_TMP/registry_versions has one "<64 hex> <version label>" line per image the
+# registry serves, STUB_TMP/local_images one "<64 hex>" line per image on the server. "image inspect
+# ... <repo@sha256:hex>" prints the label of an image on the server and fails for any other;
+# "pull [-q] <repo@sha256:hex>" puts an image the registry serves on the server and fails otherwise.
 printf '%s\n' "$*" >>"${STUB_TMP:?}/docker.log"
 case "$1 $2 $3" in
   "buildx imagetools inspect")
@@ -13,6 +17,18 @@ case "$1 $2 $3" in
     ;;
   "network inspect "*)
     [ -e "$STUB_TMP/no_web_network" ] && exit 1
+    ;;
+  "image inspect "*)
+    ref="${*: -1}"
+    hex="${ref##*@sha256:}"
+    grep -qxF -- "$hex" "$STUB_TMP/local_images" 2>/dev/null || exit 1
+    awk -v h="$hex" '$1 == h { print $2; exit }' "$STUB_TMP/registry_versions" 2>/dev/null
+    ;;
+  "pull "*)
+    ref="${*: -1}"
+    hex="${ref##*@sha256:}"
+    awk -v h="$hex" '$1 == h { found = 1 } END { exit !found }' "$STUB_TMP/registry_versions" 2>/dev/null || exit 1
+    printf '%s\n' "$hex" >>"$STUB_TMP/local_images"
     ;;
 esac
 exit 0

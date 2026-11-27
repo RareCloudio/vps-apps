@@ -17,6 +17,8 @@ VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VA_N8N_IMAGE_REF="docker.n8n.io/n8nio/n8n:stable"
 VA_N8N_POSTGRES_IMAGE_REF="postgres:16-alpine"
 VA_N8N_VALKEY_IMAGE_REF="valkey/valkey:8-alpine"
+# n8n's releases, newest first: tags n8n@X.Y.Z, betas marked as prereleases (n8n_newest_release).
+VA_N8N_RELEASES_URL="https://api.github.com/repos/n8n-io/n8n/releases?per_page=100"
 
 app_data_dir() {
   p /opt/vps-apps-data/n8n
@@ -288,14 +290,107 @@ app_domain_added() {
 
 # app_update_env <env-file> <out-file>: rc update's hook (bin/rc.d/update.sh). Writes to <out-file>
 # what the app .env becomes: the keys env.tmpl gained since this server was installed
-# (n8n_fill_env), then every image re-resolved from its tag (lib/images.sh). <env-file> itself is
-# not written. Fails when a key or an image cannot be made.
+# (n8n_fill_env), then every image re-resolved from its tag (lib/images.sh), with n8n held on the
+# major version it runs (n8n_hold_major). <env-file> itself is not written. Fails when a key or an
+# image cannot be made.
 app_update_env() {
   local filled rc=0
   filled="$(mktemp)"
   { n8n_fill_env "$1" >"$filled" && resolve_env_images "$filled" "$2"; } || rc=1
   rm -f "$filled"
-  return "$rc"
+  [ "$rc" -eq 0 ] || return 1
+  n8n_hold_major "$1" "$2"
+}
+
+# n8n_env_get <file> <key>: the value on the key's last line.
+n8n_env_get() {
+  sed -n "s/^$2=//p" "$1" | tail -n 1
+}
+
+# n8n_env_set <file> <key> <value>: every line of the key set to the value, the others kept.
+n8n_env_set() {
+  local line out=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" != "$2="* ]] || line="$2=$3"
+    out+="$line"$'\n'
+  done <"$1"
+  printf '%s' "$out" >"$1"
+}
+
+# n8n_image_version <image>: the n8n version (X.Y.Z) in the image's org.opencontainers.image.version
+# label, read with docker image inspect from the image on this server, which needs no network. An
+# image not on the server is pulled first, by its digest. Fails without a plain X.Y.Z.
+n8n_image_version() {
+  local fmt='{{index .Config.Labels "org.opencontainers.image.version"}}' v
+  v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)" ||
+    { docker pull -q "$1" >/dev/null && v="$(docker image inspect --format "$fmt" "$1" 2>/dev/null)"; } ||
+    return 1
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  printf '%s\n' "$v"
+}
+
+# n8n_version_ge <a> <b>: version a is b or newer.
+n8n_version_ge() {
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+# n8n_newest_release <major>: the highest <major>.Y.Z among the 100 newest n8n releases on GitHub
+# that are full releases (tag n8n@X.Y.Z, neither a prerelease nor a draft). Fails when there is none
+# or the answer cannot be read.
+n8n_newest_release() {
+  local body v
+  body="$(curl -fsS --max-time 30 -H 'Accept: application/vnd.github+json' "$VA_N8N_RELEASES_URL")" || return 1
+  v="$(jq -r --arg m "$1" '[.[] | select(.prerelease == false and .draft == false) | .tag_name
+    | select(type == "string" and test("^n8n@" + $m + "\\.[0-9]+\\.[0-9]+$")) | ltrimstr("n8n@")]
+    | sort_by(split(".") | map(tonumber)) | last // empty' <<<"$body" 2>/dev/null)" || return 1
+  [[ "$v" =~ ^$1\.[0-9]+\.[0-9]+$ ]] || return 1
+  printf '%s\n' "$v"
+}
+
+# n8n_hold_major <env-file> <out-file>: rc update never moves n8n to another major version (n8n's
+# database migrations only go forward). <env-file> pins the image this server runs; the N8N_IMAGE
+# line of <out-file> (the resolved .env) is the image the tag points to now. That image is kept when
+# it is of the installed major and not older. Otherwise N8N_IMAGE becomes the newest full release of
+# the installed major when GitHub lists one that is not older, or else stays the image the server
+# runs. Says what it did. Any doubt keeps n8n where it is; it fails only when <out-file> cannot be
+# written.
+n8n_hold_major() {
+  local cur new tag have want major newest pinned image
+  cur="$(n8n_env_get "$1" N8N_IMAGE)"
+  new="$(n8n_env_get "$2" N8N_IMAGE)"
+  if [ -z "$cur" ] || [ "$new" = "$cur" ]; then
+    return 0
+  fi
+  tag="$(n8n_env_get "$2" N8N_IMAGE_REF)"
+  tag="${tag##*:}"
+  image="$cur"
+  if ! have="$(n8n_image_version "$cur")"; then
+    echo "rc update: cannot read the version of the n8n image this server runs, so n8n stays on that image"
+  elif ! want="$(n8n_image_version "$new")"; then
+    echo "rc update: cannot read the version of the n8n image the $tag tag points to, so n8n stays on $have"
+  elif [ "${want%%.*}" = "${have%%.*}" ]; then
+    if n8n_version_ge "$want" "$have"; then
+      image="$new"
+    else
+      echo "rc update: the $tag tag points to n8n $want, older than $have, so n8n stays on $have"
+    fi
+  else
+    major="${have%%.*}"
+    echo "rc update: n8n $want is out, a new major version. rc update does not move n8n to a new major" \
+      "version yet, so this server stays on n8n $major.x"
+    if newest="$(n8n_newest_release "$major")" && n8n_version_ge "$newest" "$have" &&
+      pinned="$(resolve_image_digest "${cur%@*}:$newest")" && [ "$(n8n_image_version "$pinned")" = "$newest" ]; then
+      image="$pinned"
+      if [ "$pinned" = "$cur" ]; then
+        echo "rc update: n8n stays on $have, the newest $major.x release"
+      else
+        echo "rc update: n8n moves to $newest, the newest $major.x release"
+      fi
+    else
+      echo "rc update: cannot find a newer n8n $major.x release, so n8n stays on $have"
+    fi
+  fi
+  n8n_env_set "$2" N8N_IMAGE "$image"
 }
 
 # n8n_fill_env <env-file>: print <env-file> line by line as it is, then every key of env.tmpl it

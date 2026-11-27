@@ -4,6 +4,7 @@
 # fake install.sh that logs its argv and exits with the code in $STUB_TMP/install_rc.
 # Called as `install.sh --site-failed`, the fake only logs and exits with the code in
 # $STUB_TMP/site_failed_rc (0 without it), like the quick real entry point.
+# Without -o it prints $STUB_TMP/curl_body when that file exists (an API answer).
 set -eu
 printf '%s\n' "$*" >>"$STUB_TMP/curl.log"
 if [ -f "$STUB_TMP/curl_rc" ]; then
@@ -16,7 +17,10 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ -n "$out" ] || exit 0
+if [ -z "$out" ]; then
+  [ ! -f "$STUB_TMP/curl_body" ] || cat "$STUB_TMP/curl_body"
+  exit 0
+fi
 work="$(mktemp -d)"
 mkdir "$work/vps-apps-x"
 cat >"$work/vps-apps-x/install.sh" <<SH
