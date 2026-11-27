@@ -186,6 +186,9 @@ COMMIT'
   run grep -c '^ip6tables-restore ' "$FWLOG"
   [ "$output" = 0 ]
   [ ! -e "$DIR/docker-user.v6" ]
+  # The check waits for the xtables lock instead of failing on it, and the skip is logged.
+  grep -qxF 'ip6tables -w -S' "$FWLOG"
+  grep -q 'firewall: the IPv6 layer is skipped' "$(p /var/log/vps-apps-install.log)"
 }
 
 @test "fw_reload_boot_files skips the IPv6 file when ip6tables cannot list its table" {
@@ -333,6 +336,7 @@ apply_once_and_open_5432() {
   run "$RC"
   [ "$status" -eq 2 ]
   [[ "$output" == *"usage: rc"* ]]
+  [[ "$output" == *"rc update "*"refresh each image to its tag's newest digest and restart"* ]]
   run "$RC" nonsense
   [ "$status" -eq 2 ]
   run "$RC" ../x
@@ -477,24 +481,48 @@ ssh_on_2222() {
   run fw_ssh_ports
   [ "$status" -eq 0 ]
   [ "$output" = 22 ]
+  grep -q 'firewall: sshd -T failed, SSH is kept open on 22 only' "$(p /var/log/vps-apps-install.log)"
   render_nft "$PORTS" >"$BATS_TEST_TMPDIR/f.nft"
   run grep -c 'dport' "$BATS_TEST_TMPDIR/f.nft"
   [ "$output" = 2 ]
 }
 
-@test "rc port close refuses every SSH port, rc port open calls it always open, rc port list shows it" {
+@test "rc port close refuses every SSH port, and rc port list shows it" {
   ssh_on_2222
   run "$RC" port close 2222
   [ "$status" -eq 2 ]
   [[ "$output" == *"2222/tcp carries SSH, SSH stays open"* ]]
   run "$RC" port close 22
   [ "$status" -eq 2 ]
+  run "$RC" port list
+  [ "$output" = "$(printf '22/tcp\n2222/tcp\n80/tcp\n443/tcp')" ]
+}
+
+# The boot files were rendered while sshd was on 22; then the customer moved sshd to 2222. A no-op
+# "always open" here would leave only 22 in the loaded rules: SSH lockout at the next sshd restart.
+@test "rc port open of a port sshd moved to records it and applies it; rc port close still refuses it" {
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  refute_grep -qF 'dport 2222' "$DIR/vps-apps.nft"
+  ssh_on_2222
   : >"$FWLOG"
   run "$RC" port open 2222
   [ "$status" -eq 0 ]
-  [[ "$output" == *"always open"* ]]
-  [ ! -s "$PORTS" ]
-  [ ! -s "$FWLOG" ]
+  [[ "$output" == *"opened 2222/tcp"* ]]
+  [ "$(cat "$PORTS")" = 2222/tcp ]
+  grep -q '^nft -f ' "$FWLOG"
+  grep -qxF '    tcp dport 2222 accept' "$DIR/vps-apps.nft"
+  run "$RC" port close 2222
+  [ "$status" -eq 2 ]
+  [ "$(cat "$PORTS")" = 2222/tcp ]
   run "$RC" port list
   [ "$output" = "$(printf '22/tcp\n2222/tcp\n80/tcp\n443/tcp')" ]
+}
+
+@test "fw_ssh_ports makes the sshd privilege separation directory first, as base_ssh does" {
+  [ ! -e "$(p /run/sshd)" ]
+  run fw_ssh_ports
+  [ "$status" -eq 0 ]
+  [ -d "$(p /run/sshd)" ]
+  [ "$(stat -c %a "$(p /run/sshd)")" = 755 ]
 }
