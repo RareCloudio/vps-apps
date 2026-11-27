@@ -64,9 +64,13 @@ labels:
 n8n on Postgres, behind HTTPS on your domain. The owner account (your `--admin-email`, or `admin@<your host>`, with your password) is created before n8n is reachable from the internet, so nobody else can claim it. The login message over SSH shows the owner email. If your password does not meet n8n's rules (8 to 64 characters, one capital letter, one digit), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
 
 - `--mode starter`: n8n and Postgres.
-- `--mode pro`: queue mode with Valkey and two workers, for heavier workflows.
+- `--mode pro`: queue mode with Valkey and two workers, for heavier workflows. Valkey requires a password, generated on the server.
+
+n8n is installed from its `stable` tag and runs on UTC (`GENERIC_TIMEZONE` and `TZ` in `/opt/vps-apps-data/n8n/.env`), with n8n's security settings for nodes, the Git node, its settings file and OAuth callbacks set explicitly in the same file.
 
 Add more domains with `rc domain add <domain>`. The newest one becomes n8n's main address, used in webhook URLs and editor links, and every earlier name keeps working.
+
+`rc update` keeps n8n on the major version it runs, because n8n's database migrations only go forward. When `stable` moves to a new major version, n8n moves to the newest release of its current major instead, and `rc update` says so. If that release cannot be found, n8n keeps its current image. Moving to a new major version with `rc` is not supported yet.
 
 ## The `rc` command
 
@@ -86,7 +90,7 @@ On the Docker server, extra domains go on your own containers with the labels ab
 
 The installer runs a fixed list of steps: network (an IPv6 gateway outside the server's own prefix gets the on-link flag it needs, at install and at every boot, so IPv6 works), packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
-Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `latest` tag. On n8n, the database password and encryption key are generated on the server, once, and stay there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
+Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `stable` tag within its major version. On n8n, the database password, the encryption key and the Valkey password are generated on the server, once, and stay there. On an n8n server installed by an earlier release, `rc update` also adds the settings that release did not have to the `.env`, and keeps every value already there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
 
 ## Made for RareCloud
 
