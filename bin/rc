@@ -19,7 +19,7 @@ rc_usage() {
     echo "usage: rc <command> [...]"
     echo "  rc status                         the install status and the app's containers"
     echo "  rc logs [service]                 follow the app's logs"
-    echo "  rc update                         pull the newest images and restart the app and the proxy"
+    echo "  rc update                         refresh each image to its tag's newest digest and restart"
     echo "  rc domain add <domain>            serve the app on one more domain"
     echo "  rc port open <port>[/tcp|/udp]    open a host or container port"
     echo "  rc port close <port>[/tcp|/udp]   close it again"

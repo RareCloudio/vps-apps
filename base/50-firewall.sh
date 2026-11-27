@@ -13,8 +13,13 @@ fw_have() {
 
 # fw_v6: true when the IPv6 layer can be used. ip6tables-restore exists on every Ubuntu, but on a
 # kernel booted with ipv6.disable=1 ip6tables cannot even list its filter table, and every load fails.
+# The check waits for the xtables lock (-w), so a busy Docker is not read as no IPv6. A skip is logged.
 fw_v6() {
-  fw_have ip6tables-restore && fw_have ip6tables && ip6tables -S >/dev/null 2>&1
+  if fw_have ip6tables-restore && fw_have ip6tables && ip6tables -w -S >/dev/null 2>&1; then
+    return 0
+  fi
+  log "firewall: the IPv6 layer is skipped: ip6tables is missing or cannot list its table"
+  return 1
 }
 
 # fw_norm_entry <port>[/tcp|/udp]: print "<port>/<proto>" with leading zeros removed (tcp when
@@ -57,10 +62,15 @@ fw_open_ports() {
 }
 
 # fw_ssh_ports: every TCP port sshd listens on, from the port and listenaddress lines of sshd -T,
-# plus 22 always; only 22 when sshd -T fails. One per line, sorted.
+# plus 22 always; only 22 when sshd -T fails, which is logged. One per line, sorted. sshd -T needs
+# the privilege separation directory, which a first boot may not have yet (as in base_ssh).
 fw_ssh_ports() {
   local cfg=""
-  cfg="$(sshd -T 2>/dev/null)" || cfg=""
+  { mkdir -p "$(p /run/sshd)" && chmod 0755 "$(p /run/sshd)"; } 2>/dev/null || true
+  if ! cfg="$(sshd -T 2>/dev/null)"; then
+    cfg=""
+    log "firewall: sshd -T failed, SSH is kept open on 22 only"
+  fi
   {
     echo 22
     awk '$1 == "port" { p = $2 }

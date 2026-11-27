@@ -44,29 +44,31 @@ rc_port() {
   mapfile -t ssh_ports < <(fw_ssh_ports)
 
   if [ "$action" = list ]; then
-    printf '%s/tcp\n' "${ssh_ports[@]}"
-    printf '%s\n' 80/tcp 443/tcp
-    fw_open_ports "$file"
+    {
+      printf '%s/tcp\n' "${ssh_ports[@]}"
+      printf '%s\n' 80/tcp 443/tcp
+      fw_open_ports "$file"
+    } | awk '!seen[$0]++'
     return 0
   fi
 
   entry="$(rc_port_parse "$1")"
+  # Only 22, 80 and 443 are fixed in the template. Any other port, one sshd listens on included, is
+  # opened the normal way: recorded in open-ports and applied, so the loaded rules really hold it.
+  case "$action:$entry" in
+    open:22/tcp | open:80/tcp | open:443/tcp)
+      echo "$entry is always open"
+      return 0
+      ;;
+  esac
   for e in "${ssh_ports[@]}"; do
     [ "$entry" != "$e/tcp" ] || ssh_entry=yes
   done
-  if [ "$ssh_entry" = yes ]; then
-    if [ "$action" = open ]; then
-      echo "$entry is always open"
-      return 0
-    fi
+  if [ "$action" = close ] && [ "$ssh_entry" = yes ]; then
     echo "rc port: $entry carries SSH, SSH stays open" >&2
     exit 2
   fi
   case "$action:$entry" in
-    open:80/tcp | open:443/tcp)
-      echo "$entry is always open"
-      return 0
-      ;;
     close:80/tcp | close:443/tcp)
       echo "rc port: 80 and 443 carry the proxy and stay open" >&2
       exit 2
