@@ -1108,3 +1108,17 @@ n8n_image_in() {
   grep -qxF VALKEY_PASSWORD=x "$BATS_TEST_TMPDIR/out"
   [ "$(grep -c '^VALKEY_PASSWORD=' "$BATS_TEST_TMPDIR/out")" -eq 1 ]
 }
+
+@test "update: a stable of a lower major is called an older major, and n8n stays on its own major" {
+  installed 3.0.1
+  stable_is 2.49.8
+  releases n8n@3.0.2:false n8n@2.49.8:false
+  tag_has 3.0.2
+  update
+  [ "$status" -eq 0 ]
+  refute_grep -q 'new major' <<<"$output"
+  [[ "$output" == *"the stable tag points to n8n 2.49.8, an older major version"* ]]
+  [[ "$output" == *"stays on n8n 3.x"* ]]
+  [[ "$output" == *"n8n moves to 3.0.2, the newest 3.x release"* ]]
+  [ "$(n8n_image_in "$OUT")" = "$N8N_REPO@sha256:$(hex_of "$N8N_REPO:3.0.2")" ]
+}
