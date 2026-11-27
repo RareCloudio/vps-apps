@@ -24,7 +24,7 @@
 VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VA_UPTIME_KUMA_IMAGE_REF="louislam/uptime-kuma:2"
 # The user admin.js creates; Uptime Kuma has one account.
-VA_UK_USERNAME=admin
+VA_UK_USERNAME="admin"
 
 app_data_dir() {
   p /opt/vps-apps-data/uptimekuma
