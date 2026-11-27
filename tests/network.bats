@@ -257,6 +257,24 @@ YAML
   grep -q 'network: the netplan files need no change' "$LOG"
 }
 
+@test "a netplan file that is a symlink is left alone, and so is its target" {
+  mkdir -p "$VPS_APPS_ROOT/etc/netplan-real"
+  virt_file
+  mv "$VIRT" "$VPS_APPS_ROOT/etc/netplan-real/99-virt-eth0.yaml"
+  ln -s ../netplan-real/99-virt-eth0.yaml "$VIRT"
+  keep_copies "$VPS_APPS_ROOT/etc/netplan-real/99-virt-eth0.yaml"
+  network_step
+  [ "$status" -eq 0 ]
+  [ -L "$VIRT" ]
+  [ "$(readlink "$VIRT")" = ../netplan-real/99-virt-eth0.yaml ]
+  untouched "$VPS_APPS_ROOT/etc/netplan-real/99-virt-eth0.yaml"
+  [ "$(stat -c %a "$VPS_APPS_ROOT/etc/netplan-real/99-virt-eth0.yaml")" = 600 ]
+  [ ! -e "$BACKUP" ]
+  [ ! -e "$STUB_TMP/netplan.log" ]
+  [ ! -e "$STUB_TMP/ip.log" ]
+  grep -qF "network: $VIRT is a symlink, left as it is" "$LOG"
+}
+
 @test "an existing backup is never overwritten" {
   virt_file
   mkdir -p "$BACKUP"

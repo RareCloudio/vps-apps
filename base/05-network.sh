@@ -84,6 +84,11 @@ net_fix_all() {
     return 0
   fi
   for f in "$(p /etc/netplan)"/*.yaml; do
+    # Replacing a link would put a regular file in its place and leave its target as it was.
+    if [ -L "$f" ]; then
+      log "network: $f is a symlink, left as it is"
+      continue
+    fi
     [ -f "$f" ] || continue
     net_fix_file "$f" "$work"
   done
