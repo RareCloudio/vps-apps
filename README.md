@@ -22,18 +22,15 @@ On any Ubuntu 24.04 server, as root. Pick a release commit from this repo and us
 VERSION=<full commit sha>
 mkdir -p /opt/vps-apps && cd /opt/vps-apps
 curl -fsSL "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/$VERSION" | tar -xz
-mv "vps-apps-$VERSION" "$VERSION" && ln -sfn "/opt/vps-apps/$VERSION" /opt/vps-apps/current
-
-mkdir -p /etc/vps-apps
-printf 'APP=n8n\nVA_HOST=n8n.example.com\nVA_IP=203.0.113.10\n' > /etc/vps-apps/env
+mv "vps-apps-$VERSION" "$VERSION"
 
 (umask 077; printf '%s' 'your-admin-password' > /root/admin-password)
 
-/opt/vps-apps/current/install.sh --app n8n --host n8n.example.com --ip 203.0.113.10 \
+"/opt/vps-apps/$VERSION/install.sh" --app n8n --host n8n.example.com --ip 203.0.113.10 \
   --password-file /root/admin-password
 ```
 
-The `/etc/vps-apps/env` file is what `rc` reads later. Keep it in step with the arguments.
+The installer keeps its settings in `/etc/vps-apps/app.env` and points `/opt/vps-apps/current` at its code, which is what `rc` uses later.
 
 Arguments:
 

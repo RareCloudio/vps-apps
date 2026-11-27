@@ -27,6 +27,28 @@ write_atomic() {
   fi
 }
 
+# read_app_env: the installed app's settings, read as data (never sourced), into VA_APP, VA_MODE,
+# VA_HOST (lowercased) and VA_IP, and the file's path into VA_ENV_FILE. The file is
+# /etc/vps-apps/app.env, which install.sh writes from its validated arguments; a server installed
+# before app.env existed only has the bootstrap's /etc/vps-apps/env. Fails when neither can be
+# read. The values are not validated here.
+# shellcheck disable=SC2034 # the variables are the result, read by the callers
+read_app_env() {
+  local key value
+  VA_ENV_FILE="$(p /etc/vps-apps/app.env)"
+  [ -r "$VA_ENV_FILE" ] || VA_ENV_FILE="$(p /etc/vps-apps/env)"
+  [ -r "$VA_ENV_FILE" ] || return 1
+  VA_APP="" VA_MODE="" VA_HOST="" VA_IP=""
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    case "$key" in
+      APP) VA_APP="$value" ;;
+      MODE) VA_MODE="$value" ;;
+      VA_HOST) VA_HOST="${value,,}" ;;
+      VA_IP) VA_IP="$value" ;;
+    esac
+  done <"$VA_ENV_FILE"
+}
+
 # valid_hostname <name>: a lowercase DNS name with at least two labels, each 1 to 63 characters of
 # a-z, 0-9 and hyphen (not at either end), 253 characters in total. The one rule every entry point
 # (install.sh, rc) uses.
