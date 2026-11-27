@@ -6,9 +6,10 @@
 # own /64, on a route without on-link: true. systemd-networkd then never installs the IPv6 default
 # route: IPv6 does not work at all, and every boot waits two minutes for the network to come online.
 # This step adds the flag to such routes (files/netplan-onlink.py decides which, with Python's
-# ipaddress; netplan's own command is Python, so python3 is there wherever netplan is) and adds the
-# same route to the running system. It never fails the install: what goes wrong is logged, and a
-# netplan file is either fixed and validated or left exactly as it was.
+# ipaddress; netplan's own command is Python, so python3 is there wherever netplan is) and, when
+# IPv6 does not answer yet, adds the same route to the running system (net_route). It never fails
+# the install: what goes wrong is logged, and a netplan file is either fixed and validated or left
+# exactly as it was.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The address the closing check pings, for the install log only (Cloudflare's resolver).
