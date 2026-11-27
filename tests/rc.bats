@@ -250,7 +250,12 @@ APP
 @test "rc status without docker installed yet still exits 0" {
   : >"$DATA/.env"
   printf '%s' installing >"$STATE/public/.well-known/rarecloud-app-status"
-  run env PATH="$BATS_TEST_TMPDIR/nobin:/usr/bin:/bin" "$RC" status
+  # A PATH with the basic tools only: the runner may have a real docker in /usr/bin.
+  mkdir -p "$BATS_TEST_TMPDIR/nobin"
+  for t in bash env dirname readlink cat id sed grep mktemp date mkdir basename rm; do
+    ln -sf "$(command -v "$t")" "$BATS_TEST_TMPDIR/nobin/$t"
+  done
+  run env PATH="$BATS_TEST_TMPDIR/nobin" "$RC" status
   [ "$status" -eq 0 ]
   [[ "$output" == *"Status: installing"* ]]
 }
