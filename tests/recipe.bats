@@ -19,6 +19,7 @@ run_recipe() {
   body="${body%x}"
   body="${body//'{{root_pass}}'/"$pw"}"
   body="${body//'{{vps_hostname}}'/"${HOSTVAL:-h1.example.com}"}"
+  body="${body//'{{username}}'/"${EMAILVAL-}"}"
   printf '%s' "$body" >"$BATS_TEST_TMPDIR/recipe.sh"
   sh "$BATS_TEST_TMPDIR/recipe.sh" >"$BATS_TEST_TMPDIR/recipe.out" 2>&1
 }
@@ -495,4 +496,78 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   [ "$status" -eq 2 ]
   [ "$(status_now)" = "failed:args" ]
   [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+}
+
+@test "the owner email from the panel reaches install.sh, lowercased" {
+  EMAILVAL='Owner.Name@Example.COM' run_recipe 'Secret9A' --app n8n --mode starter
+  grep -qxF 'ADMIN_EMAIL=Owner.Name@Example.COM' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- '--mode starter --admin-email owner.name@example.com$' "$STUB_TMP/install.log"
+}
+
+@test "an owner email with a dollar sign or backticks runs nothing and is not passed on" {
+  local email
+  for email in 'a$x@example.com' '`touch '"$BATS_TEST_TMPDIR"'/pwned`@example.com' '$(touch '"$BATS_TEST_TMPDIR"'/pwned)@x.io'; do
+    rm -rf "$VPS_APPS_ROOT" "$STUB_TMP/install.log" "$STUB_TMP/curl.log"
+    mkdir -p "$VPS_APPS_ROOT"
+    EMAILVAL="$email" run_recipe 'Secret9A' --app n8n
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+    [ -f "$VPS_APPS_ROOT$pw_file" ]
+    grep -qxF "ADMIN_EMAIL=$email" "$VPS_APPS_ROOT/etc/vps-apps/env"
+    run bootstrap
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+    [ -s "$STUB_TMP/install.log" ]
+    refute_grep -q -- '--admin-email' "$STUB_TMP/install.log"
+  done
+}
+
+@test "an owner email with a newline makes the env invalid: failed:args" {
+  EMAILVAL=$'o@example.com\nVERSION=main' run_recipe 'Secret9A' --app n8n
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  [ "$(status_now)" = "failed:args" ]
+}
+
+@test "ADMIN_EMAIL is optional, may be empty, and may appear only once" {
+  install_recipe
+  grep -qx 'ADMIN_EMAIL=' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  refute_grep -q -- '--admin-email' "$STUB_TMP/install.log"
+  rm -f "$VPS_APPS_ROOT$STATUS" "$STUB_TMP/install.log"
+  install_recipe
+  sed -i '/^ADMIN_EMAIL=/d' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ -s "$STUB_TMP/install.log" ]
+  rm -f "$VPS_APPS_ROOT$STATUS"
+  install_recipe
+  echo 'ADMIN_EMAIL=x@example.com' >>"$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ "$(status_now)" = "failed:args" ]
+}
+
+@test "the bootstrap and install.sh check the owner email with the same rule" {
+  local boot lib
+  boot="$(grep "^  email_re='" "$BATS_TEST_DIRNAME/../recipe/recipe.sh.tmpl" || grep "^email_re='" "$BATS_TEST_DIRNAME/../recipe/recipe.sh.tmpl")"
+  lib="$(grep "^  local email_re='" "$BATS_TEST_DIRNAME/../lib/common.sh")"
+  [ -n "$boot" ]
+  [ "${boot#*email_re=}" = "${lib#*email_re=}" ]
+}
+
+@test "every panel token sits alone in a quoted heredoc, never in a comment or a command" {
+  local tmpl="$BATS_TEST_DIRNAME/../recipe/recipe.sh.tmpl" n=0 prev="" line
+  while IFS= read -r line; do
+    if [[ "$line" == *'{{'* ]]; then
+      n=$((n + 1))
+      [[ "$prev" =~ \<\<\'[A-Za-z0-9_]+\'$ ]]
+    fi
+    prev="$line"
+  done <"$tmpl"
+  [ "$n" -eq 3 ]
 }

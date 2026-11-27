@@ -314,3 +314,16 @@ APP
   run "$MOTD_SRC"
   [[ "$output" == *"Open: https://app.example.com"* ]]
 }
+
+@test "the motd names the n8n owner email in the login hint, and only a plain address" {
+  printf 'APP=n8n\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=owner@example.org\n' >"$ETC/app.env"
+  run "$MOTD_SRC"
+  [[ "$output" == *"Login: owner@example.org, with the password you set when you ordered this server"* ]]
+  printf 'APP=n8n\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=%s\n' $'a\e[31m@example.org' >"$ETC/app.env"
+  run "$MOTD_SRC"
+  refute_grep -q $'\e' <<<"$output"
+  [[ "$output" == *"Login: use the password you set when you ordered"* ]]
+  printf 'APP=docker\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=owner@example.org\n' >"$ETC/app.env"
+  run "$MOTD_SRC"
+  refute_grep -qF 'owner@example.org' <<<"$output"
+}

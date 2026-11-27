@@ -28,7 +28,7 @@ write_atomic() {
 }
 
 # read_app_env: the installed app's settings, read as data (never sourced), into VA_APP, VA_MODE,
-# VA_HOST (lowercased) and VA_IP, and the file's path into VA_ENV_FILE. The file is
+# VA_HOST (lowercased), VA_IP and VA_ADMIN_EMAIL, and the file's path into VA_ENV_FILE. The file is
 # /etc/vps-apps/app.env, which install.sh writes from its validated arguments; a server installed
 # before app.env existed only has the bootstrap's /etc/vps-apps/env. Fails when neither can be
 # read. The values are not validated here.
@@ -38,15 +38,26 @@ read_app_env() {
   VA_ENV_FILE="$(p /etc/vps-apps/app.env)"
   [ -r "$VA_ENV_FILE" ] || VA_ENV_FILE="$(p /etc/vps-apps/env)"
   [ -r "$VA_ENV_FILE" ] || return 1
-  VA_APP="" VA_MODE="" VA_HOST="" VA_IP=""
+  VA_APP="" VA_MODE="" VA_HOST="" VA_IP="" VA_ADMIN_EMAIL=""
   while IFS='=' read -r key value || [ -n "$key" ]; do
     case "$key" in
       APP) VA_APP="$value" ;;
       MODE) VA_MODE="$value" ;;
       VA_HOST) VA_HOST="${value,,}" ;;
       VA_IP) VA_IP="$value" ;;
+      ADMIN_EMAIL) VA_ADMIN_EMAIL="$value" ;;
     esac
   done <"$VA_ENV_FILE"
+}
+
+# valid_email <address>: a conservative lowercase address that n8n accepts as its owner login: a
+# local part of a-z, 0-9 and . _ % + - (no dot at either end or twice in a row, 64 characters at
+# most), an @, and a DNS name whose last label is 2 to 63 letters; 254 characters in total. The
+# bootstrap embedded in the recipe checks the same email_re.
+valid_email() {
+  local email_re='^[a-z0-9_%+-]+(\.[a-z0-9_%+-]+)*@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+  local local_part="${1%@*}"
+  [ "${#1}" -le 254 ] && [ "${#local_part}" -le 64 ] && [[ "$1" =~ $email_re ]]
 }
 
 # valid_hostname <name>: a lowercase DNS name with at least two labels, each 1 to 63 characters of

@@ -64,3 +64,35 @@ setup() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"run as root"* ]]
 }
+
+# email_after <args...>: the owner email install.sh settles on for these extra arguments.
+email_after() {
+  bash -c '. "$1"; shift; parse_args --app n8n --host a.example.com --ip 1.2.3.4 --password-file "$@"; printf "%s" "$VA_ADMIN_EMAIL"' \
+    _ "$INSTALL" "$PWF" "$@"
+}
+
+@test "--admin-email is lowercased and kept" {
+  run email_after --admin-email Owner.Name+n8n@Example.COM
+  [ "$status" -eq 0 ]
+  [ "$output" = owner.name+n8n@example.com ]
+}
+
+@test "no --admin-email, or one that is not a plain address, falls back to admin@<host>" {
+  local bad long
+  run email_after
+  [ "$status" -eq 0 ]
+  [ "$output" = admin@a.example.com ]
+  long="$(printf 'x%.0s' $(seq 250))@example.com"
+  for bad in '' 'a$x@example.com' '`id`@example.com' 'no-at-sign' 'a@b' 'a..b@example.com' '.a@example.com' \
+    'a.@example.com' 'a@-x.example.com' 'a@example.c0m' 'a@b@example.com' '{{username}}' 'a b@example.com' \
+    "$(printf 'a\nb')@example.com" "$long" "$(printf 'x%.0s' $(seq 65))@example.com"; do
+    run email_after --admin-email "$bad"
+    [ "$status" -eq 0 ]
+    [ "$output" = admin@a.example.com ]
+  done
+}
+
+@test "--admin-email needs a value" {
+  run bash "$INSTALL" --app n8n --host a.example.com --ip 1.2.3.4 --password-file "$PWF" --admin-email
+  [ "$status" -eq 2 ]
+}

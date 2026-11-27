@@ -45,7 +45,7 @@ host stops answering over ssh, the probe FAILs instead of reading it as "closed"
 | 1 | install | the rendered recipe runs as root with the nasty password; the timer is armed; the password file is byte-exact |
 | 2 | status | `/.well-known/rarecloud-app-status` reads `installing`, then `ready` |
 | 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate |
-| 4 | n8n | login, API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
+| 4 | n8n | login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
 | 5 | docker | whoami over HTTPS; postgres on 5432 closed, `rc port open`, restarts of docker and `vps-apps-nft`, `rc port close`, on IPv4 and IPv6 (docker only). Port 22 is probed first as a positive control |
 | 6 | resume | install killed after `app_up_setup`, the timer resumes it, same `.env` checksum (fresh OS only) |
 | 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables follow |

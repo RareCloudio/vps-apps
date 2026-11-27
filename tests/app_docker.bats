@@ -13,7 +13,8 @@ setup() {
   DRIVER="$BATS_TEST_TMPDIR/driver.sh"
   # The driver sources install.sh, replaces load_code with stubs that log their name, and runs main.
   # EXTRA is extra shell code that runs after the stubs (to make one of them fail, for example).
-  # INSTALL_SH names another copy of install.sh to source (default: this checkout).
+  # INSTALL_SH names another copy of install.sh to source (default: this checkout). MAIN_EXTRA is
+  # split into extra arguments for main.
   cat >"$DRIVER" <<DRV
 set -euo pipefail
 . "\${INSTALL_SH:-$ROOT_DIR/install.sh}"
@@ -37,7 +38,7 @@ load_code() {
   }
   eval "\${EXTRA:-:}"
 }
-main --app docker --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+main --app docker --host a.example.com --ip 1.2.3.4 --password-file "$PWF" \${MAIN_EXTRA:-}
 DRV
 }
 
@@ -203,8 +204,16 @@ code_copy() {
   run_driver
   [ "$status" -eq 0 ]
   cmp "$etc/env" "$BATS_TEST_TMPDIR/env.before"
-  [ "$(cat "$etc/app.env")" = "$(printf 'APP=docker\nMODE=\nVA_HOST=a.example.com\nVA_IP=1.2.3.4')" ]
+  [ "$(cat "$etc/app.env")" = "$(printf 'APP=docker\nMODE=\nVA_HOST=a.example.com\nVA_IP=1.2.3.4\nADMIN_EMAIL=admin@a.example.com')" ]
   [ "$(stat -c %a "$etc/app.env")" = 644 ]
+}
+
+@test "--admin-email is recorded in app.env and exported to the steps" {
+  run_driver MAIN_EXTRA='--admin-email Owner@Example.org' \
+    EXTRA='app_prepare() { bash -c '"'"'echo "email $VA_ADMIN_EMAIL"'"'"' >>"'"$CALLS"'"; }'
+  [ "$status" -eq 0 ]
+  grep -qxF 'email owner@example.org' "$CALLS"
+  grep -qxF 'ADMIN_EMAIL=owner@example.org' "$VPS_APPS_ROOT/etc/vps-apps/app.env"
 }
 
 @test "a manual run, without the recipe, leaves a working rc" {

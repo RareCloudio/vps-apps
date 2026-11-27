@@ -27,7 +27,7 @@ mv "vps-apps-$VERSION" "$VERSION"
 (umask 077; printf '%s' 'your-admin-password' > /root/admin-password)
 
 "/opt/vps-apps/$VERSION/install.sh" --app n8n --host n8n.example.com --ip 203.0.113.10 \
-  --password-file /root/admin-password
+  --password-file /root/admin-password --admin-email you@example.com
 ```
 
 The installer keeps its settings in `/etc/vps-apps/app.env` and points `/opt/vps-apps/current` at its code, which is what `rc` uses later.
@@ -41,6 +41,7 @@ Arguments:
 | `--ip` | The server's public IPv4 address |
 | `--password-file` | Required for both apps. A file with the admin password; n8n uses it for the owner login, the Docker app does not use it. Delete it once the install is ready. |
 | `--mode` | n8n only: `starter` (default) or `pro` |
+| `--admin-email` | Optional. The email for the n8n owner login. Without it, or when it is not a plain address, the login is `admin@<your host>`. |
 
 It exits 0 when the app is ready, 1 when a step failed (run it again, finished steps are skipped), 2 for bad arguments and 3 on any other OS than Ubuntu 24.04.
 
@@ -60,7 +61,7 @@ labels:
 
 ### n8n
 
-n8n on Postgres, behind HTTPS on your domain. The owner account (`admin@<your host>`, with your password) is created before n8n is reachable from the internet, so nobody else can claim it. If your password does not meet n8n's rules (8 to 64 characters, one capital letter, one digit), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+n8n on Postgres, behind HTTPS on your domain. The owner account (your `--admin-email`, or `admin@<your host>`, with your password) is created before n8n is reachable from the internet, so nobody else can claim it. The login message over SSH shows the owner email. If your password does not meet n8n's rules (8 to 64 characters, one capital letter, one digit), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
 
 - `--mode starter`: n8n and Postgres.
 - `--mode pro`: queue mode with Valkey and two workers, for heavier workflows.
