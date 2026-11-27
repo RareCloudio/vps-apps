@@ -149,6 +149,7 @@ READY=unknown # unknown | yes | no
 REASON=""
 NOTE=""
 
+exec 9>&2 # curl_t logs its retries here, even where a caller sends stderr to /dev/null
 say() { printf '[%4ss] %s\n' "$SECONDS" "$*" >&2; }
 fail() {
   REASON="$*"
@@ -183,10 +184,37 @@ wait_ssh() {
 
 # http_code <curl args...>: the HTTP status, 000 when nothing answered.
 http_code() {
-  curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$@" 2>/dev/null || true
+  curl_t -sS -o /dev/null -w '%{http_code}' --max-time 15 "$@" 2>/dev/null || true
 }
 
 status_now() { curl -s --max-time 5 "http://$IP/.well-known/rarecloud-app-status" 2>/dev/null | tr -d '\r\n' || true; }
+
+# curl_t <curl args...>: curl, with a few retries on transport errors (35 TLS, 52, 56, 7, 28). The
+# Windows TLS stack (schannel) sometimes fails a handshake for no reason. Only the last attempt's
+# stdout is printed, so a -w '%{http_code}' value is never doubled.
+curl_t() {
+  local try out rc
+  for try in 1 2 3 4; do
+    rc=0
+    out="$(curl "$@")" || rc=$?
+    case "$rc" in
+      35 | 52 | 56 | 7 | 28) ;;
+      *) break ;;
+    esac
+    [ "$try" -lt 4 ] || break
+    say "curl transport error $rc, retry $try of 3" 2>&9
+    sleep 2
+  done
+  printf '%s' "$out"
+  return "$rc"
+}
+
+# https_has <url> <grep pattern>: the page loads and contains the pattern.
+https_has() {
+  local out
+  out="$(curl_t -fsS --max-time 15 "$1" 2>/dev/null)" || return 1
+  grep -q "$2" <<<"$out"
+}
 
 # tcp_open <host> <port>: 0 when a TCP connection is made within 5 seconds. With --probe-host the
 # attempt is made from that server over ssh; an ssh failure there is not a "closed" answer, it sets
@@ -235,7 +263,7 @@ deploy_recipe() {
   printf '%s' "$content" >"$TMP/recipe.sh"
   content=""
   say "running the recipe on $IP as root (app=$APP mode=${MODE:-default} host=$HOST)"
-  out="$("$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" \
+  out="$(timeout 1800 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" \
     'umask 077; f="$(mktemp)"; cat >"$f"; r=0; sh "$f" || r=$?; rm -f "$f"; exit "$r"' \
     <"$TMP/recipe.sh" 2>&1)" || rc=$?
   rm -f "$TMP/recipe.sh"
@@ -356,9 +384,9 @@ check_3_https() {
   local body="$TMP/https.body" vr
   say "waiting for a valid certificate on https://$HOST/"
   ensure_ready || return 1
-  retry 300 5 curl -fsS --max-time 15 -o "$body" "https://$HOST/" 2>/dev/null ||
+  retry 300 5 curl_t -fsS --max-time 15 -o "$body" "https://$HOST/" 2>/dev/null ||
     { fail "curl -fsS https://$HOST/ never passed (certificate or reply)"; return 1; }
-  vr="$(curl -sS --max-time 15 -o /dev/null -w '%{ssl_verify_result}' "https://$HOST/" 2>/dev/null || true)"
+  vr="$(curl_t -sS --max-time 15 -o /dev/null -w '%{ssl_verify_result}' "https://$HOST/" 2>/dev/null || true)"
   [ "$vr" = 0 ] || { fail "certificate verify result is '$vr'"; return 1; }
   if [ "$APP" = docker ] && ! grep -q 'Your Docker server is ready' "$body"; then
     fail "the Docker landing page text is missing"
@@ -368,19 +396,20 @@ check_3_https() {
 
 # --- n8n helpers -------------------------------------------------------------------------------
 
-# n8n_req <method> <path> [body]: JSON from stdin when a third argument is given. Sets CODE; the
-# response is in $BODY. APIKEY_HDR is sent when it exists.
+# n8n_req <method> <path> [json file]: the request body comes from the file when given. Sets CODE, so
+# it must never run as a stage of a pipeline (a pipeline stage is a subshell and CODE would be lost).
+# The response is in $BODY. APIKEY_HDR is sent when it exists.
 CODE=""
 n8n_req() {
   local method="$1" path="$2" hdr=()
   [ ! -f "$APIKEY_HDR" ] || hdr=(-H "@$(winpath "$APIKEY_HDR")")
   : >"$BODY"
   if [ $# -ge 3 ]; then
-    CODE="$(curl -sS --max-time 60 -o "$(winpath "$BODY")" -w '%{http_code}' -X "$method" \
+    CODE="$(curl_t -sS --max-time 60 -o "$(winpath "$BODY")" -w '%{http_code}' -X "$method" \
       -H 'Content-Type: application/json' -H 'browser-id: e2e-smoke' "${hdr[@]}" \
-      -b "$(winpath "$JAR")" -c "$(winpath "$JAR")" --data-binary @- "https://$HOST$path" 2>/dev/null)" || CODE=000
+      -b "$(winpath "$JAR")" -c "$(winpath "$JAR")" --data-binary "@$(winpath "$3")" "https://$HOST$path" 2>/dev/null)" || CODE=000
   else
-    CODE="$(curl -sS --max-time 60 -o "$(winpath "$BODY")" -w '%{http_code}' -X "$method" \
+    CODE="$(curl_t -sS --max-time 60 -o "$(winpath "$BODY")" -w '%{http_code}' -X "$method" \
       -H 'browser-id: e2e-smoke' "${hdr[@]}" \
       -b "$(winpath "$JAR")" -c "$(winpath "$JAR")" "https://$HOST$path" </dev/null 2>/dev/null)" || CODE=000
   fi
@@ -391,8 +420,9 @@ n8n_req() {
 n8n_login() {
   local deadline=$((SECONDS + $2))
   while :; do
-    jq -n --arg e "admin@$HOST" --rawfile p "$(winpath "$1")" '{emailOrLdapLoginId: $e, password: $p}' |
-      n8n_req POST /rest/login body
+    jq -n --arg e "admin@$HOST" --rawfile p "$(winpath "$1")" '{emailOrLdapLoginId: $e, password: $p}' >"$TMP/login.json"
+    n8n_req POST /rest/login "$TMP/login.json"
+    rm -f "$TMP/login.json"
     case "$CODE" in
       200) return 0 ;;
       400 | 401) return 1 ;;
@@ -404,7 +434,7 @@ n8n_login() {
 
 n8n_webhook_ok() {
   local out
-  out="$(curl -sS --max-time 30 "https://$HOST/webhook/$1" 2>/dev/null)" || return 1
+  out="$(curl_t -sS --max-time 30 "https://$HOST/webhook/$1" 2>/dev/null)" || return 1
   jq -e 'if type == "array" then .[0].smoke == "ok" else .smoke == "ok" end' <<<"$out" >/dev/null 2>&1
 }
 
@@ -455,8 +485,9 @@ EOF
   fi
 
   say "n8n: create an API key and a webhook workflow"
-  printf '{"label":"e2e-smoke","scopes":["workflow:create","workflow:read","workflow:delete","workflow:list","workflow:activate","execution:list","execution:read"],"expiresAt":null}' |
-    n8n_req POST /rest/api-keys body
+  printf '{"label":"e2e-smoke","scopes":["workflow:create","workflow:read","workflow:delete","workflow:list","workflow:activate","execution:list","execution:read"],"expiresAt":null}' >"$TMP/req.json"
+  n8n_req POST /rest/api-keys "$TMP/req.json"
+  rm -f "$TMP/req.json"
   [ "$CODE" = 200 ] || { fail "POST /rest/api-keys answered HTTP $CODE: $(head -c 200 "$BODY")"; return 1; }
   key="$(jq -r '.data.rawApiKey // empty' "$BODY")"
   [ -n "$key" ] || { fail "no rawApiKey in the API key response"; return 1; }
@@ -476,12 +507,14 @@ EOF
     connections: {Webhook: {main: [[{node: "Mark", type: "main", index: 0}]]}},
     settings: {}
   }' >"$wfjson"
-  n8n_req POST /api/v1/workflows body <"$wfjson"
+  n8n_req POST /api/v1/workflows "$wfjson"
   rm -f "$wfjson"
   [ "$CODE" = 200 ] || { fail "POST /api/v1/workflows answered HTTP $CODE: $(head -c 300 "$BODY")"; return 1; }
   wf_id="$(jq -r '.id // empty' "$BODY")"
   [ -n "$wf_id" ] || { fail "no workflow id in the create response"; return 1; }
-  n8n_req POST "/api/v1/workflows/$wf_id/activate" body <<<'{}'
+  printf '{}' >"$TMP/req.json"
+  n8n_req POST "/api/v1/workflows/$wf_id/activate" "$TMP/req.json"
+  rm -f "$TMP/req.json"
   [ "$CODE" = 200 ] || { fail "activating the workflow answered HTTP $CODE: $(head -c 300 "$BODY")"; return 1; }
 
   say "n8n: run the workflow through its production webhook"
@@ -492,8 +525,9 @@ EOF
   newpw_value="Nw9$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
   printf '%s' "$newpw_value" >"$newpw"
   newpw_value=""
-  jq -n --rawfile c "$(winpath "$oldpw")" --rawfile n "$(winpath "$newpw")" '{currentPassword: $c, newPassword: $n}' |
-    n8n_req PATCH /rest/me/password body
+  jq -n --rawfile c "$(winpath "$oldpw")" --rawfile n "$(winpath "$newpw")" '{currentPassword: $c, newPassword: $n}' >"$TMP/req.json"
+  n8n_req PATCH /rest/me/password "$TMP/req.json"
+  rm -f "$TMP/req.json"
   [ "$CODE" = 200 ] || { fail "PATCH /rest/me/password answered HTTP $CODE: $(head -c 200 "$BODY")"; return 1; }
   : >"$JAR"
   if n8n_login "$oldpw" 20; then fail "the old password still works after the change"; return 1; fi
@@ -637,7 +671,7 @@ docker run -d --name smoke-whoami --network web \
   --label "caddy=whoami.$1.sslip.io" \
   --label 'caddy.reverse_proxy={{upstreams 80}}' traefik/whoami
 EOF
-  retry 300 5 bash -c 'curl -fsS --max-time 15 "https://whoami.$1.sslip.io/" | grep -q "^Hostname:"' _ "$IPD" ||
+  retry 300 5 https_has "https://whoami.$HOST/" '^Hostname:' ||
     { c5_cleanup; fail "https://whoami.$HOST/ does not answer with the whoami reply"; return 1; }
   rm -f "$body"
 
@@ -693,16 +727,25 @@ EOF
 }
 
 check_7_domain() {
-  local domain="app.$HOST" body="$TMP/domain.body" r
+  local domain="app.$HOST" body="$TMP/domain.body" r out rc=0
   ensure_ready || return 1
   say "rc domain add $domain"
+  if [ "$APP" = docker ]; then
+    # Designed refusal: a Docker server takes no extra domain through rc; the landing page shows the
+    # caddy labels to use on your own container instead.
+    out="$(vcmd_t 900 "rc domain add $domain" 2>&1)" || rc=$?
+    [ "$rc" -eq 1 ] || { fail "rc domain add exited $rc, expected the refusal (exit 1): $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"; return 1; }
+    grep -q 'caddy labels' <<<"$out" || { fail "rc domain add did not print the caddy labels message: $out"; return 1; }
+    vcmd 'test ! -e /etc/vps-apps/domains' >/dev/null 2>&1 || { fail "/etc/vps-apps/domains was created although rc refused"; return 1; }
+    retry 120 5 https_has "https://$HOST/" 'Your Docker server is ready' ||
+      { fail "the primary name https://$HOST/ stopped serving the landing page"; return 1; }
+    NOTE="refusal as designed"
+    return 0
+  fi
   vcmd_t 900 "rc domain add $domain" >&2 2>&1 || { fail "rc domain add $domain failed"; return 1; }
   vcmd "grep -qxF $domain /etc/vps-apps/domains" >/dev/null 2>&1 || { fail "$domain is not in /etc/vps-apps/domains"; return 1; }
-  if [ "$APP" = docker ]; then
-    retry 300 5 bash -c 'curl -fsS --max-time 15 "https://$1/" | grep -q "Your Docker server is ready"' _ "$domain" ||
-      { fail "https://$domain/ does not serve the Docker landing page"; return 1; }
-  else
-    retry 300 5 bash -c 'curl -fsS --max-time 15 "https://$1/healthz/readiness" | grep -q "\"status\":\"ok\""' _ "$domain" ||
+  {
+    retry 300 5 https_has "https://$domain/healthz/readiness" '"status":"ok"' ||
       { fail "https://$domain/healthz/readiness does not answer"; return 1; }
     r="$(vscript "$HOST" "$domain" <<'EOF'
 envf=/opt/vps-apps-data/n8n/.env
@@ -727,7 +770,7 @@ done
 echo ok
 EOF
     )" || { fail "the n8n URL variables do not follow: $r"; return 1; }
-  fi
+  }
   [ "$(http_code "https://$HOST/")" = 200 ] || { fail "the primary name https://$HOST/ stopped answering"; return 1; }
   rm -f "$body"
 }
@@ -882,8 +925,8 @@ EOF
   fi
   actual="$(getv pwauth)"
   [ "$actual" = "$expect" ] || { fail "sshd passwordauthentication is '$actual', expected '$expect' (usable keys: ${keys:-0})"; return 1; }
-  if [ "$expect" = no ] && [ "$(getv rootlogin)" != prohibit-password ]; then
-    fail "permitrootlogin is '$(getv rootlogin)', expected prohibit-password with a key installed"
+  if [ "$expect" = no ] && [ "$(getv rootlogin)" != prohibit-password ] && [ "$(getv rootlogin)" != without-password ]; then
+    fail "permitrootlogin is '$(getv rootlogin)', expected prohibit-password (or its alias without-password) with a key installed"
     return 1
   fi
   NOTE="pwauth=$actual rootlogin=$(getv rootlogin) keys=${keys:-0}"
@@ -909,7 +952,7 @@ func_of() {
 
 say "target: root@$IP app=$APP mode=${MODE:-default} version=$VERSION"
 say "checks: $CHECKS"
-code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 180 "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/$VERSION" 2>/dev/null || true)"
+code="$(curl_t -sS -o /dev/null -w '%{http_code}' --max-time 180 "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/$VERSION" 2>/dev/null || true)"
 if [ "$code" != 200 ]; then
   echo "vps-smoke: codeload answers HTTP $code for $VERSION; push the commit to GitHub first" >&2
   exit 2
@@ -921,6 +964,7 @@ for n in "${ORDER[@]}"; do
   [[ "$SELECTED" == *" $n "* ]] || continue
   REASON=""
   NOTE=""
+  FAILED_SEEN=""
   say "check $n $(name_of "$n")"
   if "$(func_of "$n")"; then
     if [ -n "$NOTE" ]; then
