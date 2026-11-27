@@ -217,9 +217,19 @@ n8n_setup_still_offered() {
   return 1
 }
 
-# app_expose: first refuses while n8n still offers the owner setup (the loopback port is still
-# published then), so an n8n without an owner is never put on the internet.
+# app_expose: first puts the stack back into setup state (marker removed, n8n published on the
+# loopback port only) and waits for it. That makes a retry after a failed or interrupted expose
+# recover on its own, and it is where the owner check can be made. Then it refuses while n8n still
+# offers the owner setup, so an n8n without an owner is never put on the internet.
 app_expose() {
+  rm -f "$(app_data_dir)/exposed"
+  if ! app_compose up -d; then
+    log "n8n: cannot bring the setup stack up before exposing"
+    return 1
+  fi
+  if ! n8n_wait_for_api; then
+    return 1
+  fi
   if n8n_setup_still_offered; then
     log "n8n: refusing to expose, the owner setup is still offered or its state is unreadable"
     return 1
