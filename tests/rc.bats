@@ -172,6 +172,38 @@ APP
   refute_grep -q ' pull$' "$STUB_TMP/docker.log"
 }
 
+# real_n8n_app: the installed code is the repo's own n8n app instead of the stub hooks.
+real_n8n_app() {
+  cp "$BATS_TEST_DIRNAME/../apps/n8n/"* "$APPDIR/"
+  printf '%s' pro >"$DATA/mode"
+  : >"$DATA/exposed"
+}
+
+@test "rc update on an n8n server from the previous release adds the new keys and keeps the secrets" {
+  real_n8n_app
+  pg="$(printf 'a%.0s' $(seq 48))"
+  key="$(printf 'b%.0s' $(seq 64))"
+  n8n_ref=docker.n8n.io/n8nio/n8n:2.49.8
+  n8n_hex="$(printf '%s' "$n8n_ref" | sha256sum | cut -d' ' -f1)"
+  printf '%s\n' "N8N_IMAGE=docker.n8n.io/n8nio/n8n@sha256:$n8n_hex" "N8N_IMAGE_REF=$n8n_ref" \
+    "POSTGRES_IMAGE=postgres@$ZEROS" POSTGRES_IMAGE_REF=postgres:16-alpine \
+    "VALKEY_IMAGE=valkey/valkey@$ZEROS" VALKEY_IMAGE_REF=valkey/valkey:8-alpine POSTGRES_USER=n8n POSTGRES_DB=n8n \
+    "POSTGRES_PASSWORD=$pg" "N8N_ENCRYPTION_KEY=$key" 'VA_SITE_ADDRS="app.example.com"' N8N_HOST=app.example.com \
+    WEBHOOK_URL=https://app.example.com/ N8N_EDITOR_BASE_URL=https://app.example.com >"$DATA/.env"
+  chmod 600 "$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  run "$RC" update
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$DATA/.env")" = 600 ]
+  grep -qxF "POSTGRES_PASSWORD=$pg" "$DATA/.env"
+  grep -qxF "N8N_ENCRYPTION_KEY=$key" "$DATA/.env"
+  grep -qxF TZ=UTC "$DATA/.env"
+  grep -qxF N8N_BLOCK_ENV_ACCESS_IN_NODE=true "$DATA/.env"
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$DATA/.env"
+  refute_grep -qF "$ZEROS" "$DATA/.env"
+  grep -qE "^compose -f .*/n8n/compose\.yml -f .*/n8n/compose\.pro\.yml -f .*/n8n/compose\.expose\.yml .* up -d$" "$STUB_TMP/docker.log"
+}
+
 @test "refresh_image_digests appends a missing image line and leaves other lines alone" {
   printf 'A=1\nB_IMAGE_REF=repo/b:2\n' >"$BATS_TEST_TMPDIR/e.env"
   refresh_image_digests "$BATS_TEST_TMPDIR/e.env"
