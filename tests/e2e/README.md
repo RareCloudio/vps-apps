@@ -40,10 +40,12 @@ host stops answering over ssh, the probe FAILs instead of reading it as "closed"
 
 Check 5 proves IPv6 for the boot the install ran in only. A restart from the Virtualizor panel writes
 `/etc/netplan/99-virt-eth0.yaml` again before the VM boots, without the on-link flag, and the installer's
-boot unit `vps-apps-ipv6-onlink.service` puts it back. The script does not test that yet: after a run,
-restart the VPS from the panel, then check by hand that the file has `on-link: true` again,
-`ping -6 -c1 2606:4700:4700::1111` answers, `journalctl -b -u vps-apps-ipv6-onlink` shows the fix, and
-`systemd-analyze` reports a boot of seconds, not two minutes.
+boot unit `vps-apps-ipv6-onlink.service` puts it back (or the node hook's `rarecloud-ipv6-onlink.service`,
+which runs first once it ships). The script does not test that yet: after a run, restart the VPS from the
+panel, then check by hand that the file has `on-link: true` again, `ping -6 -c1 2606:4700:4700::1111`
+answers, the journal of either unit shows the fix
+(`journalctl -b -u vps-apps-ipv6-onlink -u rarecloud-ipv6-onlink`), and `systemd-analyze` reports a boot
+of seconds, not two minutes.
 
 ## Checks
 
