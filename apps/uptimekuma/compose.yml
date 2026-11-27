@@ -1,0 +1,25 @@
+# Uptime Kuma on its embedded SQLite database, in one container. The image digest comes from the
+# .env under /opt/vps-apps-data/uptimekuma (compose reads it through --env-file); the default only
+# keeps the file valid on its own. Reached through compose.setup.yml before exposure and
+# compose.expose.yml after.
+name: vps-apps-uptimekuma
+
+services:
+  uptime-kuma:
+    image: ${UPTIME_KUMA_IMAGE:-louislam/uptime-kuma:2}
+    restart: unless-stopped
+    environment:
+      # SQLite in /app/data. Set here, Uptime Kuma skips its database setup page, which would
+      # otherwise let the first visitor pick the database (server/setup-database.js:98-111 in 2.5.12;
+      # https://github.com/louislam/uptime-kuma/wiki/Environment-Variables).
+      UPTIME_KUMA_DB_TYPE: sqlite
+      # Websockets must come with an Origin that matches the Host header, or with none. This is
+      # Uptime Kuma's default, set explicitly so a change of default cannot loosen it. The proxy
+      # passes the Host header through, so the browser's own origin matches.
+      UPTIME_KUMA_WS_ORIGIN_CHECK: cors-like
+    volumes:
+      # The data path of the official image (https://github.com/louislam/uptime-kuma#-docker-command).
+      - uptime_kuma_data:/app/data
+
+volumes:
+  uptime_kuma_data:

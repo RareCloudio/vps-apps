@@ -1,0 +1,15 @@
+# After exposure: the caddy labels serve Uptime Kuma on the server's own name and every extra domain
+# (VA_SITE_ADDRS in the app .env). Caddy's reverse_proxy carries the websocket the UI runs on. The
+# default network is kept for outbound checks; web is the proxy's network.
+services:
+  uptime-kuma:
+    networks:
+      - default
+      - web
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 3001}}"
+
+networks:
+  web:
+    external: true
