@@ -1,0 +1,94 @@
+# Nextcloud (the official Apache image) on Postgres, with Valkey for the cache, the file locking and
+# the PHP sessions, and a second container from the same image that runs the background jobs. The
+# secrets and image digests come from the .env under /opt/vps-apps-data/nextcloud (compose reads it
+# through --env-file); the image defaults only keep the file valid on its own. Reached through
+# compose.setup.yml before exposure and compose.expose.yml after.
+#
+# The Nextcloud containers get none of the image's admin or database variables, so the image never
+# installs itself and its web installer is never prefilled: app.sh installs through occ on the
+# loopback port. Docs: https://github.com/nextcloud/docker#auto-configuration-via-environment-variables
+name: vps-apps-nextcloud
+
+# Valkey for memcache.distributed, memcache.locking and the PHP sessions, set by the image's own
+# config/redis.config.php from these variables at runtime
+# (https://github.com/nextcloud/docker#redis-memory-caching). The password stays out of config.php
+# and off every command line. Background jobs get the same settings, so they lock files where the
+# web requests do.
+x-valkey-env: &valkey-env
+  REDIS_HOST: valkey
+  REDIS_HOST_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is not set}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nextcloud
+      POSTGRES_DB: nextcloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Valkey requires VALKEY_PASSWORD. It gets it in its environment and reads it as config on stdin,
+  # so the value is on no command line.
+  valkey:
+    image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
+    restart: unless-stopped
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is not set}
+    # Through the image's entrypoint (it drops root) to "valkey-server -", which reads its config
+    # from stdin; the container's shell fills in the value.
+    command:
+      - sh
+      - -c
+      - |
+        exec docker-entrypoint.sh valkey-server - <<EOF
+        requirepass $${VALKEY_PASSWORD:?}
+        EOF
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${VALKEY_PASSWORD}\" valkey-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  nextcloud:
+    image: ${NEXTCLOUD_IMAGE:-nextcloud:34-apache}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      <<: *valkey-env
+      # The image's Apache takes the client address from X-Real-IP for any private source, and
+      # Caddy passes a client's own X-Real-IP through. Off, so only Nextcloud's trusted_proxies
+      # (set by app.sh) decides the client address. https://github.com/nextcloud/docker#using-the-image-behind-a-reverse-proxy-and-specifying-the-server-host-and-protocol
+      APACHE_DISABLE_REWRITE_IP: "1"
+    # The code, config.php and the users' files, all under /var/www/html as in the image's examples.
+    volumes:
+      - nextcloud_data:/var/www/html
+
+  # The background jobs: the image's /cron.sh runs cron.php every 5 minutes as www-data
+  # (https://docs.nextcloud.com/server/34/admin_manual/configuration_server/background_jobs_configuration.html).
+  cron:
+    image: ${NEXTCLOUD_IMAGE:-nextcloud:34-apache}
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    depends_on:
+      - nextcloud
+    environment: *valkey-env
+    volumes:
+      - nextcloud_data:/var/www/html
+
+volumes:
+  postgres_data:
+  valkey_data:
+  nextcloud_data:

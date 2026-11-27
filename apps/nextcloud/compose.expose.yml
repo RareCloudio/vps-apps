@@ -1,0 +1,20 @@
+# After exposure: the caddy labels serve Nextcloud on the server's names (VA_SITE_ADDRS in the app
+# .env). The default network is kept for the database and Valkey; web is the proxy's network.
+# The proxy owns the CalDAV and CardDAV discovery redirects and HSTS, as Nextcloud's docs ask:
+# https://docs.nextcloud.com/server/34/admin_manual/configuration_server/reverse_proxy_configuration.html#service-discovery
+# https://docs.nextcloud.com/server/34/admin_manual/installation/harden_server.html#enable-http-strict-transport-security
+services:
+  nextcloud:
+    networks:
+      - default
+      - web
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 80}}"
+      caddy.redir_0: "/.well-known/carddav /remote.php/dav/ 301"
+      caddy.redir_1: "/.well-known/caldav /remote.php/dav/ 301"
+      caddy.header: "Strict-Transport-Security max-age=15552000"
+
+networks:
+  web:
+    external: true
