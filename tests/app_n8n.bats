@@ -175,6 +175,28 @@ merged_config() {
   [ "$(jq -r '.services["n8n-worker"].ports // [] | length' <<<"$cfg")" = 0 ]
 }
 
+@test "n8n and its workers run on UTC, from GENERIC_TIMEZONE and TZ in the .env" {
+  # The shell's own values would win over the .env in compose; keep the test about the .env.
+  unset TZ GENERIC_TIMEZONE
+  VA_MODE=pro app_prepare
+  grep -qxF GENERIC_TIMEZONE=UTC "$DATA/.env"
+  grep -qxF TZ=UTC "$DATA/.env"
+  cfg="$(merged_config compose.yml compose.pro.yml compose.expose.yml)"
+  for s in n8n n8n-worker; do
+    [ "$(jq -r --arg s "$s" '.services[$s].environment.GENERIC_TIMEZONE' <<<"$cfg")" = UTC ]
+    [ "$(jq -r --arg s "$s" '.services[$s].environment.TZ' <<<"$cfg")" = UTC ]
+  done
+  # A zone set in the .env is the one n8n gets.
+  sed -i 's#^GENERIC_TIMEZONE=UTC$#GENERIC_TIMEZONE=Europe/Bucharest#' "$DATA/.env"
+  cfg="$(merged_config compose.yml compose.setup.yml)"
+  [ "$(jq -r '.services.n8n.environment.GENERIC_TIMEZONE' <<<"$cfg")" = Europe/Bucharest ]
+  # An .env written before these keys existed still runs n8n on UTC.
+  sed -i -E '/^(GENERIC_TIMEZONE|TZ)=/d' "$DATA/.env"
+  cfg="$(merged_config compose.yml compose.setup.yml)"
+  [ "$(jq -r '.services.n8n.environment.GENERIC_TIMEZONE' <<<"$cfg")" = UTC ]
+  [ "$(jq -r '.services.n8n.environment.TZ' <<<"$cfg")" = UTC ]
+}
+
 @test "starter mode config has neither valkey nor EXECUTIONS_MODE" {
   app_prepare
   cfg="$(merged_config compose.yml compose.setup.yml)"

@@ -39,6 +39,10 @@ services:
       N8N_PROXY_HOPS: "1"
       WEBHOOK_URL: ${WEBHOOK_URL:?WEBHOOK_URL is not set}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:?N8N_EDITOR_BASE_URL is not set}
+      # Schedules and dates run on this zone (n8n's own default is America/New_York). The defaults
+      # cover an .env written before these keys existed.
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      TZ: ${TZ:-UTC}
     volumes:
       - n8n_data:/home/node/.n8n
 
