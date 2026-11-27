@@ -297,7 +297,8 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
 @test "the expose label is exactly the site address, with no scheme or port, and Apache's port 80" {
   grep -qF 'caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}' "$APP_DIR/compose.expose.yml"
   grep -qF 'caddy.reverse_proxy: "{{upstreams 80}}"' "$APP_DIR/compose.expose.yml"
-  refute_grep -qE 'https?://|:443' "$APP_DIR/compose.expose.yml"
+  # The comments may cite documentation links; the YAML itself names no scheme or port.
+  refute_grep -qE 'https?://|:443' <(grep -vE '^[[:space:]]*#' "$APP_DIR/compose.expose.yml")
 }
 
 @test "merged setup config: loopback 8080 for WordPress only, no labels, nothing else published" {
@@ -323,6 +324,23 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
     [ "$(jq -r --arg s "$s" '.services[$s].ports // [] | length' <<<"$cfg")" = 0 ]
   done
   [ "$(jq -r '.services.db.networks | keys | join(",")' <<<"$cfg")" = default ]
+}
+
+@test "xmlrpc.php is refused with a 403 by Caddy, at the path and below it, for every method" {
+  grep -qF 'caddy.@xmlrpc.path: "/xmlrpc.php /xmlrpc.php/*"' "$APP_DIR/compose.expose.yml"
+  grep -qF 'caddy.respond: "@xmlrpc 403"' "$APP_DIR/compose.expose.yml"
+  # A plain respond: Caddy sorts it ahead of reverse_proxy, so no route or handle block is needed.
+  refute_grep -qE 'caddy\.(route|handle)' "$APP_DIR/compose.expose.yml"
+}
+
+@test "merged expose config: the xmlrpc.php matcher and its 403 sit next to the reverse proxy" {
+  app_prepare
+  cfg="$(merged_config compose.yml compose.expose.yml)"
+  [ "$(jq -r '.services.wordpress.labels["caddy.@xmlrpc.path"]' <<<"$cfg")" = "/xmlrpc.php /xmlrpc.php/*" ]
+  [ "$(jq -r '.services.wordpress.labels["caddy.respond"]' <<<"$cfg")" = "@xmlrpc 403" ]
+  [ "$(jq -r '.services.wordpress.labels["caddy.reverse_proxy"]' <<<"$cfg")" = "{{upstreams 80}}" ]
+  # The site address, the proxy, the matcher and the 403: nothing else rides along.
+  [ "$(jq -r '.services.wordpress.labels | keys | join(",")' <<<"$cfg")" = "caddy,caddy.@xmlrpc.path,caddy.respond,caddy.reverse_proxy" ]
 }
 
 @test "merged config: WordPress knows its HTTPS address, and WP-CLI gets the same environment" {

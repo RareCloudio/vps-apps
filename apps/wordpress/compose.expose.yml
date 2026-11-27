@@ -7,8 +7,17 @@ services:
     networks:
       - default
       - web
+    # xmlrpc.php is refused with a 403 before WordPress sees it: its system.multicall tries
+    # hundreds of passwords against the well-known admin login in one request, and WordPress has
+    # no lockout. The path below it is refused too, because Apache runs xmlrpc.php for
+    # /xmlrpc.php/<anything>. Caddy's path matcher ignores case and matches the decoded, cleaned
+    # path. A plain respond is enough: Caddy's directive order puts respond ahead of reverse_proxy
+    # (https://caddyserver.com/docs/caddyfile/directives#directive-order). Named matcher labels:
+    # https://github.com/lucaslorentz/caddy-docker-proxy#sites-snippets-and-global-options.
     labels:
       caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.@xmlrpc.path: "/xmlrpc.php /xmlrpc.php/*"
+      caddy.respond: "@xmlrpc 403"
       caddy.reverse_proxy: "{{upstreams 80}}"
 
 networks:
