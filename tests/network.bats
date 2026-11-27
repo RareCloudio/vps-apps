@@ -460,6 +460,9 @@ YAML
     grep -qxF -- "$line" "$f"
   done
   refute_grep -q '^RemainAfterExit=yes' "$f"
+  # The node-side hook's unit does the same job in the same guests: never both on the file at once.
+  # The ordering is in [Unit], and does nothing when that unit is absent.
+  [ "$(sed -n '/^\[Unit\]$/,/^\[/p' "$f" | grep -cxF 'After=rarecloud-ipv6-onlink.service')" -eq 1 ]
 }
 
 @test "the step installs the checker, the runner and the unit, and enables the unit" {
