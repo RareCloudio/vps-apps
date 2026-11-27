@@ -4,7 +4,7 @@
 # ssh_usable_key <authorized_keys>: 0 only when sshd will really accept a plain key from the file,
 # so that turning password login off cannot lock the customer out. Otherwise 1, with the reason in
 # the install log. All of these must hold:
-#   - /root/.ssh and the file are owned by root and not group- or world-writable (sshd's
+#   - /root, /root/.ssh and the file are owned by root and not group- or world-writable (sshd's
 #     StrictModes ignores the file otherwise). Under a test root the owner is the current user.
 #   - a line starts with a known key type, so option lines (command=, from=) and RFC4716 (PuTTY)
 #     blocks do not count;
@@ -18,7 +18,7 @@ ssh_usable_key() {
   fi
   want_uid=0
   [ -z "${VPS_APPS_ROOT:-}" ] || want_uid="$(id -u)"
-  for f in "$dir" "$file"; do
+  for f in "$(dirname "$dir")" "$dir" "$file"; do
     uid="$(stat -c %u "$f")"
     mode="$(stat -c %a "$f")"
     if [ "$uid" != "$want_uid" ] || [ $((8#$mode & 8#022)) -ne 0 ]; then
@@ -43,6 +43,33 @@ ssh_usable_key() {
   return "$ok"
 }
 
+# ssh_key_login_on: 0 when sshd, as configured now, lets root in with a key from
+# /root/.ssh/authorized_keys alone: sshd -T reports public key login on, that file among its
+# AuthorizedKeysFile entries, and AuthenticationMethods any (no second method demanded). Otherwise 1,
+# with the reason in the install log.
+ssh_key_login_on() {
+  local cfg
+  if ! cfg="$(sshd -T 2>/dev/null)"; then
+    log "ssh: keeping password login: sshd -T failed"
+    return 1
+  fi
+  if ! grep -qx 'pubkeyauthentication yes' <<<"$cfg"; then
+    log "ssh: keeping password login: sshd has public key login off"
+    return 1
+  fi
+  if ! awk '$1 == "authorizedkeysfile" {
+      for (i = 2; i <= NF; i++)
+        if ($i == ".ssh/authorized_keys" || $i == "%h/.ssh/authorized_keys" || $i == "/root/.ssh/authorized_keys") found = 1
+    } END { exit !found }' <<<"$cfg"; then
+    log "ssh: keeping password login: sshd does not read .ssh/authorized_keys ($(grep '^authorizedkeysfile' <<<"$cfg" || true))"
+    return 1
+  fi
+  if ! grep -qx 'authenticationmethods any' <<<"$cfg"; then
+    log "ssh: keeping password login: sshd demands $(grep '^authenticationmethods' <<<"$cfg" || echo 'other authentication methods')"
+    return 1
+  fi
+}
+
 # ssh_restore_dropin <dropin> <previous-copy or empty>: put the previous drop-in back, or remove ours.
 ssh_restore_dropin() {
   if [ -n "$2" ]; then
@@ -52,7 +79,8 @@ ssh_restore_dropin() {
   fi
 }
 
-# base_ssh: password login stays on unless a usable key is installed (see ssh_usable_key).
+# base_ssh: password login stays on unless a usable key is installed (see ssh_usable_key) and sshd
+# would accept it on its own (see ssh_key_login_on).
 # With a key: password and keyboard-interactive login are off and root is key-only. Without one:
 # password login stays on, because the password is the only way in.
 # The setting goes in a drop-in that sorts before Ubuntu's 50-cloud-init.conf (sshd keeps the first
@@ -77,7 +105,7 @@ base_ssh() {
   mkdir -p "$(p /run/sshd)"
   chmod 0755 "$(p /run/sshd)"
 
-  if ssh_usable_key "$(p /root/.ssh/authorized_keys)"; then
+  if ssh_usable_key "$(p /root/.ssh/authorized_keys)" && ssh_key_login_on; then
     pw=no root=prohibit-password
   else
     pw=yes root=yes
