@@ -8,6 +8,8 @@ RC_ROOT="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # shellcheck source=/dev/null
 . "$RC_ROOT/lib/images.sh"
 # shellcheck source=/dev/null
+. "$RC_ROOT/lib/compose.sh"
+# shellcheck source=/dev/null
 . "$RC_ROOT/base/50-firewall.sh"
 # shellcheck source=/dev/null
 . "$RC_ROOT/base/60-proxy.sh"
@@ -58,6 +60,7 @@ rc_load_env() {
 # rc_load_app: rc_load_env, then load the installed app's hooks. The app provides
 #   app_compose_files        print the absolute path of each compose file, one per line
 #   app_domain_added <host>  apply /etc/vps-apps/domains (this host was just added)
+#   app_domain_check <host>  optional: print why and return 1 when the app takes no extra domain
 rc_load_app() {
   local app_sh
   rc_load_env
@@ -73,16 +76,7 @@ rc_load_app() {
 # rc_compose <docker compose args...>: docker compose for the installed app, with the compose files
 # the app names and its .env under /opt/vps-apps-data/<app>/.
 rc_compose() {
-  local f
-  local -a args=()
-  while IFS= read -r f; do
-    [ -z "$f" ] || args+=(-f "$f")
-  done < <(app_compose_files)
-  if [ "${#args[@]}" -eq 0 ]; then
-    echo "rc: the app names no compose file" >&2
-    exit 1
-  fi
-  docker compose "${args[@]}" --env-file "$(p "/opt/vps-apps-data/$VA_APP/.env")" "$@"
+  compose_run "$(p "/opt/vps-apps-data/$VA_APP/.env")" "$@" || exit 1
 }
 
 # rc_require_serving: the app answers on its own domain (site mode app); before that there is

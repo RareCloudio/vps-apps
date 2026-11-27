@@ -273,3 +273,14 @@ APP
   cmp "$PROXY/.env" "$BATS_TEST_TMPDIR/proxy.env"
   refute_grep -q ' pull$' "$STUB_TMP/docker.log"
 }
+
+@test "rc domain add stops before any DNS wait or record when the app refuses the domain" {
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_domain_check() { echo "this app takes no extra domain" >&2; return 1; }
+APP
+  run "$RC" domain add www.example.org
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"this app takes no extra domain"* ]]
+  [ ! -e "$ETC/domains" ]
+  [ ! -e "$STUB_TMP/hook.log" ]
+}

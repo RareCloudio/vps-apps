@@ -11,6 +11,7 @@
 #   app_compose_files           print absolute compose file paths, one per line; the expose file only
 #                               once the marker exists
 #   app_domain_added <domain>   apply /etc/vps-apps/domains to the labels
+#   app_domain_check <domain>   optional: return 1 with a message when the app takes no extra domain
 # In site mode app the app's own caddy labels carry VA_HOST; the base Caddyfile has no block for it.
 
 VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,36 +30,13 @@ app_compose_files() {
 
 # app_compose <docker compose args...>
 app_compose() {
-  local f
-  local -a args=()
-  while IFS= read -r f; do
-    args+=(-f "$f")
-  done < <(app_compose_files)
-  docker compose "${args[@]}" --env-file "$(app_data_dir)/.env" "$@"
+  compose_run "$(app_data_dir)/.env" "$@"
 }
 
-# app_site_addrs: VA_HOST first, then every valid, new line of /etc/vps-apps/domains, space separated.
-# Each line is validated again here because it ends up inside a caddy label.
-app_site_addrs() {
-  local addrs="$VA_HOST" line file
-  file="$(p /etc/vps-apps/domains)"
-  if [ -f "$file" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      line="${line,,}"
-      if ! valid_hostname "$line"; then
-        [ -z "$line" ] || log "docker: ignoring invalid domain line in $file"
-        continue
-      fi
-      case " $addrs " in *" $line "*) continue ;; esac
-      addrs="$addrs $line"
-    done <"$file"
-  fi
-  printf '%s\n' "$addrs"
-}
-
-# app_write_env <image> <addrs>: the app .env, replaced atomically.
+# app_write_env <image>: the app .env, replaced atomically. The landing page owns the server's own
+# name, so that is the only label address.
 app_write_env() {
-  printf 'LANDING_IMAGE=%s\nLANDING_IMAGE_REF=%s\nVA_SITE_ADDRS="%s"\n' "$1" "$VA_DOCKER_IMAGE_REF" "$2" |
+  printf 'LANDING_IMAGE=%s\nLANDING_IMAGE_REF=%s\nVA_SITE_ADDRS="%s"\n' "$1" "$VA_DOCKER_IMAGE_REF" "$VA_HOST" |
     write_atomic "$(app_data_dir)/.env" 0644
 }
 
@@ -68,7 +46,7 @@ app_prepare() {
   mkdir -p "$data/www"
   write_atomic "$data/www/index.html" 0644 <"$VA_APP_DIR/www/index.html"
   image="$(resolve_image_digest "$VA_DOCKER_IMAGE_REF")" || return 1
-  app_write_env "$image" "$(app_site_addrs)"
+  app_write_env "$image"
 }
 
 app_up_setup() {
@@ -84,20 +62,31 @@ app_expose() {
   set_site_mode app
   if ! app_compose up -d; then
     log "docker: starting the landing page failed"
+    # Stop whatever came up, drop the marker (so rc no longer names the expose file) and show the
+    # failed page again instead of leaving a half-exposed server.
+    app_compose down || true
+    rm -f "$(app_data_dir)/exposed"
     set_site_mode failed
     return 1
   fi
 }
 
-# The landing page must answer over HTTPS on the server's own name with a valid certificate.
+# The landing page must answer over HTTPS on the server's own name with a valid certificate. The
+# body is captured first: a pipe into grep -q can fail curl with error 23 under pipefail.
 app_ready_check() {
-  curl -fsS --max-time 10 --resolve "$VA_HOST:443:127.0.0.1" "https://$VA_HOST/" |
-    grep -q 'Your Docker server is ready'
+  local body
+  body="$(curl -fsS --max-time 10 --resolve "$VA_HOST:443:127.0.0.1" "https://$VA_HOST/")" || return 1
+  grep -q 'Your Docker server is ready' <<<"$body"
+}
+
+# On a Docker server the landing container owns the server's own name, and a second site block for
+# one name makes Caddy reject the whole config. Domains for the customer's own containers go on
+# their caddy labels, so rc domain add has nothing to do here.
+app_domain_check() {
+  echo "On a Docker server, give a domain to your own container with the caddy labels shown on the landing page" >&2
+  return 1
 }
 
 app_domain_added() {
-  local image
-  image="$(sed -n 's/^LANDING_IMAGE=//p' "$(app_data_dir)/.env" | head -n1)"
-  app_write_env "$image" "$(app_site_addrs)"
-  app_compose up -d
+  app_domain_check
 }

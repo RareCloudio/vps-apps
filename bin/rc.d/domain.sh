@@ -22,6 +22,9 @@ rc_domain_add() {
     exit 2
   fi
   rc_require_serving
+  if declare -F app_domain_check >/dev/null; then
+    app_domain_check "$domain" || exit 1
+  fi
 
   echo "Point an A record for $domain to $VA_IP"
   if ! wait_for_name "$domain" "$VA_IP" "$wait"; then

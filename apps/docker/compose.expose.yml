@@ -1,8 +1,8 @@
 # Added to compose.yml once the app is exposed: the caddy labels that serve the landing page on
-# the server's name and on every domain added with rc domain add (VA_SITE_ADDRS, space separated).
+# the server's own name (VA_SITE_ADDRS in the app .env).
 services:
   landing:
     image: ${LANDING_IMAGE:-caddy:2-alpine}
     labels:
-      caddy: ${VA_SITE_ADDRS:-app.example.com}
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
       caddy.reverse_proxy: "{{upstreams 3000}}"
