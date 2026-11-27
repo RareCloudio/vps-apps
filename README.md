@@ -73,8 +73,8 @@ Add more domains with `rc domain add <domain>`. The newest one becomes n8n's mai
 ```text
 rc status                       install status and the app's containers
 rc logs [service]               follow the logs
-rc update                       move to the newest images and restart
-rc port open <port>[/udp]       open a port (22, 80 and 443 are always open)
+rc update                       refresh each image to its tag's newest digest and restart
+rc port open <port>[/udp]       open a port (SSH, 80 and 443 are always open)
 rc port close <port>[/udp]      close it again
 rc port list                    show open ports
 rc domain add <domain>          serve n8n on one more domain
@@ -86,7 +86,7 @@ On the Docker server, extra domains go on your own containers with the labels ab
 
 The installer runs a fixed list of steps: packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
-Images are pinned by digest at install, and `rc update` moves them to the newest release. On n8n, the database password and encryption key are generated on the server, once, and stay there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
+Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `latest` tag. On n8n, the database password and encryption key are generated on the server, once, and stay there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
 
 ## Made for RareCloud
 
