@@ -28,11 +28,12 @@ setup() {
   : >"$CURL_ARGV"
 }
 
-# A curl that records every argv entry on its own line and the stdin of the owner call, answers the
-# health probe with success and the owner call with OWNER_CODE and OWNER_BODY.
+# A curl that records every argv entry on its own line and the stdin of the owner call. The
+# readiness probe fails as many times as the number in $BATS_TEST_TMPDIR/ready_fail (then succeeds),
+# the settings call prints SETTINGS_BODY, the owner call answers OWNER_CODE and OWNER_BODY.
 stub_curl() {
   curl() {
-    local out="" a prev=""
+    local out="" a prev="" n
     printf '%s\n' "$@" >>"$CURL_ARGV"
     for a in "$@"; do
       [ "$prev" = -o ] && out="$a"
@@ -40,12 +41,30 @@ stub_curl() {
     done
     if [[ " $* " == *" @- "* ]]; then
       cat >"$CURL_STDIN"
-      printf '%s' "${OWNER_BODY:-}" >"$out"
+      if [ -e "$BATS_TEST_TMPDIR/owner_first_400" ]; then
+        rm -f "$BATS_TEST_TMPDIR/owner_first_400"
+        printf '%s' '{"code":400,"message":"Password must be 8 to 64 characters long and contain at least 1 number and 1 uppercase letter"}' >"$out"
+        printf 400
+        return 0
+      fi
+      printf '%s' "${OWNER_BODY-$OWNER_OK}" >"$out"
       printf '%s' "${OWNER_CODE:-200}"
+    elif [[ "$*" == *"/healthz/readiness" ]]; then
+      n="$(cat "$BATS_TEST_TMPDIR/ready_fail" 2>/dev/null || echo 0)"
+      if [ "$n" -gt 0 ]; then
+        echo $((n - 1)) >"$BATS_TEST_TMPDIR/ready_fail"
+        return 22
+      fi
+    elif [[ "$*" == *"/rest/settings" ]]; then
+      printf '%s' "${SETTINGS_BODY-$SETTINGS_NO_SETUP}"
     fi
     return 0
   }
 }
+
+OWNER_OK='{"data":{"email":"admin@n.example.com","firstName":"Admin"}}'
+SETTINGS_NO_SETUP='{"data":{"userManagement":{"showSetupOnFirstLoad":false}}}'
+SETTINGS_SETUP='{"data":{"userManagement":{"showSetupOnFirstLoad":true}}}'
 
 # The real docker, when the machine has one (the stub is first on PATH): merged config checks.
 real_docker() {
@@ -233,7 +252,9 @@ merged_config() {
   curl() { printf '%s\n' "$*" >>"$CURL_ARGV"; return 7; }
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
-  grep -qF 'http://127.0.0.1:5678/healthz' "$CURL_ARGV"
+  grep -qF 'http://127.0.0.1:5678/healthz/readiness' "$CURL_ARGV"
+  grep -qF -- '--max-time 30' "$CURL_ARGV"
+  refute_grep -qxF 'http://127.0.0.1:5678/healthz' "$CURL_ARGV"
   refute_grep -qF '/rest/owner/setup' "$CURL_ARGV"
 }
 
@@ -299,6 +320,7 @@ merged_config() {
 
 @test "app_expose writes the marker, puts the site in app mode and starts the expose file" {
   app_prepare
+  stub_curl
   app_expose
   [ -f "$DATA/exposed" ]
   [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = app ]
@@ -307,6 +329,7 @@ merged_config() {
 
 @test "a failed start in app_expose takes the stack down, drops the marker and shows the failed page" {
   app_prepare
+  stub_curl
   docker() { printf '%s\n' "$*" >>"$STUB_TMP/docker_calls"; return 1; }
   run app_expose
   [ "$status" -ne 0 ]
@@ -318,7 +341,7 @@ merged_config() {
 @test "app_ready_check needs n8n healthy over HTTPS on the server own name" {
   curl() { printf '%s\n' "$*" >"$BATS_TEST_TMPDIR/curl_args"; printf '{"status":"ok"}'; }
   app_ready_check
-  grep -qF -- '--resolve n.example.com:443:127.0.0.1 https://n.example.com/healthz' "$BATS_TEST_TMPDIR/curl_args"
+  grep -qF -- '--resolve n.example.com:443:127.0.0.1 https://n.example.com/healthz/readiness' "$BATS_TEST_TMPDIR/curl_args"
   curl() { printf 'something else'; }
   run app_ready_check
   [ "$status" -ne 0 ]
@@ -347,4 +370,120 @@ merged_config() {
 @test "n8n defines no app_domain_check, so rc domain add accepts extra domains" {
   run declare -F app_domain_check
   [ "$status" -ne 0 ]
+}
+
+@test "a 200 'starting up' answer to the owner call does not count: the step fails" {
+  app_prepare
+  stub_curl
+  OWNER_BODY='n8n is starting up. Please wait' run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
+  OWNER_BODY='{"data":{"email":"someone@else.com"}}' run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
+  OWNER_BODY='' run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
+}
+
+@test "a 200 that carries the owner counts" {
+  app_prepare
+  stub_curl
+  app_create_admin "$PWF"
+}
+
+@test "the readiness probe failing twice is waited out before the owner call" {
+  app_prepare
+  stub_curl
+  echo 2 >"$BATS_TEST_TMPDIR/ready_fail"
+  app_create_admin "$PWF"
+  [ "$(grep -c 'healthz/readiness' "$CURL_ARGV")" -eq 3 ]
+  [ -s "$CURL_STDIN" ]
+}
+
+@test "the readiness probe and the owner call have a 30 second cap" {
+  app_prepare
+  stub_curl
+  app_create_admin "$PWF"
+  [ "$(grep -cxF -- '--max-time' "$CURL_ARGV")" -eq 2 ]
+  [ "$(grep -cxF 30 "$CURL_ARGV")" -eq 2 ]
+}
+
+@test "app_expose refuses while n8n still offers the owner setup, and changes nothing" {
+  app_prepare
+  stub_curl
+  : >"$STUB_TMP/docker.log"
+  SETTINGS_BODY="$SETTINGS_SETUP" run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+  [ ! -e "$(p /var/lib/vps-apps/site-mode)" ]
+  [ ! -s "$STUB_TMP/docker.log" ]
+}
+
+@test "app_expose refuses when the settings answer cannot be read" {
+  app_prepare
+  stub_curl
+  SETTINGS_BODY='n8n is starting up. Please wait' run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+  SETTINGS_BODY='' run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+}
+
+@test "app_expose reads the setup flag from the loopback settings endpoint" {
+  app_prepare
+  stub_curl
+  app_expose
+  grep -qxF 'http://127.0.0.1:5678/rest/settings' "$CURL_ARGV"
+}
+
+@test "a non-ASCII or non-printable password uses the generated fallback" {
+  app_prepare
+  stub_curl
+  for bad in 'Pässword1x' $'Tab\tPass1word' $'Pass\nword1X' 'Пароль1Abcdef'; do
+    rm -f "$(p /root/vps-apps-credentials.txt)"
+    printf '%s' "$bad" >"$PWF"
+    app_create_admin "$PWF"
+    sent="$(jq -r .password "$CURL_STDIN")"
+    [ "$sent" != "$bad" ]
+    [ -f "$(p /root/vps-apps-credentials.txt)" ]
+  done
+}
+
+@test "a 400 'Password must ...' from n8n triggers the fallback and a second call" {
+  app_prepare
+  stub_curl
+  : >"$BATS_TEST_TMPDIR/owner_first_400"
+  app_create_admin "$PWF"
+  cred="$(p /root/vps-apps-credentials.txt)"
+  [ -f "$cred" ]
+  [ "$(stat -c %a "$cred")" = 600 ]
+  [ "$(jq -r .password "$CURL_STDIN")" != Secret123 ]
+  grep -qF "$(jq -r .password "$CURL_STDIN")" "$cred"
+  [ "$(grep -c 'rest/owner/setup' "$CURL_ARGV")" -eq 2 ]
+}
+
+@test "the template substitution is literal even for an ampersand in a value" {
+  grep -qF '"${vars[$key]}"' "$APP_DIR/app.sh"
+}
+
+@test "the MOTD shows only the fallback hint, not 'use the password you set', when the credentials file exists" {
+  motd="$ROOT_DIR/base/files/99-vps-apps-motd"
+  run "$motd"
+  [[ "$output" == *"use the password you set"* ]]
+  mkdir -p "$(p /root)"
+  printf 'Password: TopSecret123\n' >"$(p /root/vps-apps-credentials.txt)"
+  run "$motd"
+  [[ "$output" == *"/root/vps-apps-credentials.txt"* ]]
+  refute_grep -qF 'use the password you set' <<<"$output"
+}
+
+@test "check-compose.sh fails when a compose file is in no checked combination" {
+  copy="$BATS_TEST_TMPDIR/copy"
+  mkdir -p "$copy"
+  cp -r "$ROOT_DIR/scripts" "$ROOT_DIR/apps" "$ROOT_DIR/base" "$copy/"
+  printf 'services: {}\n' >"$copy/apps/n8n/compose.extra.yml"
+  docker() { return 0; }
+  export -f docker
+  run bash "$copy/scripts/check-compose.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"compose.extra.yml"* ]]
 }

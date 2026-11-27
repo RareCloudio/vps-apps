@@ -96,7 +96,7 @@ app_prepare() {
   local key
   while IFS= read -r line || [ -n "$line" ]; do
     for key in "${!vars[@]}"; do
-      line="${line//@${key}@/${vars[$key]}}"
+      line="${line//@${key}@/"${vars[$key]}"}"
     done
     out+="$line"$'\n'
   done <"$VA_APP_DIR/env.tmpl"
@@ -108,77 +108,122 @@ app_up_setup() {
 }
 
 # n8n_password_ok <file>: the n8n rule, 8 to 64 characters with an uppercase letter and a digit,
-# judged on the exact bytes of the file.
+# judged on the exact bytes of the file. Only printable ASCII is accepted: n8n counts UTF-16 units
+# and its uppercase test is ASCII-only, so anything else deterministically takes the fallback.
 n8n_password_ok() {
-  local pw
+  local LC_ALL=C pw
   pw="$(
     cat "$1"
     printf x
   )"
   pw="${pw%x}"
+  [[ "$pw" =~ ^[[:print:]]+$ ]] || return 1
   [ "${#pw}" -ge 8 ] && [ "${#pw}" -le 64 ] && [[ "$pw" =~ [A-Z] ]] && [[ "$pw" =~ [0-9] ]]
 }
 
-# n8n_wait_for_api: wait, bounded, until n8n answers on the loopback port.
+# n8n_wait_for_api: wait, bounded, until n8n is fully ready on the loopback port. While migrations
+# still run, n8n answers every path but /healthz* with HTTP 200 "starting up", so only
+# /healthz/readiness (200 once connected and migrated) says that the owner call will really work.
 n8n_wait_for_api() {
   local deadline
   deadline=$((SECONDS + ${VA_N8N_WAIT:-180}))
-  until curl -fsS -o /dev/null --max-time 5 http://127.0.0.1:5678/healthz 2>/dev/null; do
+  until curl -fsS -o /dev/null --max-time 30 http://127.0.0.1:5678/healthz/readiness 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-      log "n8n: no answer on 127.0.0.1:5678"
+      log "n8n: not ready on 127.0.0.1:5678"
       return 1
     fi
     sleep "${VA_N8N_INTERVAL:-3}"
   done
 }
 
-# app_create_admin <password-file>: the owner account through n8n's REST call on the loopback port.
-# The body is built with jq from the password file and goes to curl on stdin. A password that breaks
-# n8n's rule is replaced by a generated one in /root/vps-apps-credentials.txt (mode 600); a retry
-# reuses that file. n8n answers HTTP 400 "Instance owner already setup" when the owner exists
-# (a retry after the call succeeded), which counts as success.
-app_create_admin() {
-  local pwfile="$1" cred tmp="" body code rc=0
-  cred="$(p /root/vps-apps-credentials.txt)"
-  if ! n8n_password_ok "$pwfile"; then
-    log "n8n: the chosen password does not meet n8n's rule, using a generated one"
-    tmp="$(mktemp "$(app_data_dir)/.owner-pw.XXXXXX")"
-    chmod 600 "$tmp"
-    if [ -f "$cred" ]; then
-      sed -n 's/^Password: //p' "$cred" | head -n1 | tr -d '\n' >"$tmp"
-    fi
-    if [ ! -s "$tmp" ]; then
-      printf 'Rc9%s' "$(openssl rand -hex 16)" >"$tmp"
-      (
-        umask 077
-        mkdir -p "$(dirname "$cred")"
-        printf 'n8n owner login, generated because the password you chose does not meet n8n rules\nEmail: admin@%s\nPassword: %s\n' \
-          "$VA_HOST" "$(cat "$tmp")" | write_atomic "$cred" 0600
-      )
-    fi
-    pwfile="$tmp"
-  fi
-
+# n8n_post_owner <password-file>: one owner setup call, the body built by jq from the file and sent
+# on stdin. Returns 0 when the owner exists afterwards (the response is the owner, or n8n says the
+# owner is already set up), 2 when n8n rejects the password, 1 for anything else. A 200 whose body
+# is not the owner (n8n's "starting up" page) is a failure, never a success.
+n8n_post_owner() {
+  local body code rc=1 msg
   body="$(mktemp)"
-  if n8n_wait_for_api; then
-    code="$(jq -n --rawfile pw "$pwfile" --arg email "admin@$VA_HOST" \
-      '{email: $email, firstName: "Admin", lastName: "RareCloud", password: $pw}' |
-      curl -sS -o "$body" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @- \
-        http://127.0.0.1:5678/rest/owner/setup)" || code=000
-    case "$code" in
-      200) ;;
-      400) grep -q 'Instance owner already setup' "$body" || rc=1 ;;
-      *) rc=1 ;;
-    esac
-    [ "$rc" -eq 0 ] || log "n8n: owner setup failed with HTTP $code: $(head -c 200 "$body")"
-  else
-    rc=1
-  fi
-  rm -f "$body" "$tmp"
+  code="$(jq -n --rawfile pw "$1" --arg email "admin@$VA_HOST" \
+    '{email: $email, firstName: "Admin", lastName: "RareCloud", password: $pw}' |
+    curl -sS --max-time 30 -o "$body" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @- \
+      http://127.0.0.1:5678/rest/owner/setup)" || code=000
+  case "$code" in
+    200) jq -e --arg e "admin@$VA_HOST" '.data.email == $e' "$body" >/dev/null 2>&1 && rc=0 ;;
+    400)
+      msg="$(jq -r '.message // empty' "$body" 2>/dev/null || true)"
+      case "$msg" in
+        "Instance owner already setup") rc=0 ;;
+        "Password must"*) rc=2 ;;
+      esac
+      ;;
+  esac
+  [ "$rc" -ne 1 ] || log "n8n: owner setup failed with HTTP $code: $(head -c 200 "$body")"
+  rm -f "$body"
   return "$rc"
 }
 
+# n8n_fallback_password_file <file>: write a password that satisfies n8n's rule into <file> and
+# keep it in /root/vps-apps-credentials.txt (mode 600). A retry reuses the one already stored there.
+n8n_fallback_password_file() {
+  local cred
+  cred="$(p /root/vps-apps-credentials.txt)"
+  if [ -f "$cred" ]; then
+    sed -n 's/^Password: //p' "$cred" | head -n1 | tr -d '\n' >"$1"
+  fi
+  if [ ! -s "$1" ]; then
+    printf 'Rc9%s' "$(openssl rand -hex 16)" >"$1"
+    (
+      umask 077
+      mkdir -p "$(dirname "$cred")"
+      printf 'n8n owner login, generated because the password you chose does not meet n8n rules\nEmail: admin@%s\nPassword: %s\n' \
+        "$VA_HOST" "$(cat "$1")" | write_atomic "$cred" 0600
+    )
+  fi
+}
+
+# app_create_admin <password-file>: the owner account through n8n's REST call on the loopback port.
+# A password that breaks n8n's rule (by our check or by n8n's own 400 "Password must ...") is
+# replaced by a generated one in /root/vps-apps-credentials.txt, and the call is made again.
+app_create_admin() {
+  local pwfile="$1" tmp="" rc=0
+  tmp="$(mktemp "$(app_data_dir)/.owner-pw.XXXXXX")"
+  chmod 600 "$tmp"
+  if ! n8n_password_ok "$pwfile"; then
+    log "n8n: the chosen password does not meet n8n's rule, using a generated one"
+    n8n_fallback_password_file "$tmp"
+    pwfile="$tmp"
+  fi
+  if n8n_wait_for_api; then
+    n8n_post_owner "$pwfile" || rc=$?
+    if [ "$rc" -eq 2 ] && [ "$pwfile" != "$tmp" ]; then
+      log "n8n: n8n rejected the chosen password, using a generated one"
+      n8n_fallback_password_file "$tmp"
+      rc=0
+      n8n_post_owner "$tmp" || rc=$?
+    fi
+  else
+    rc=1
+  fi
+  rm -f "$tmp"
+  [ "$rc" -eq 0 ] || return 1
+}
+
+# n8n_setup_still_offered: succeeds unless the loopback settings endpoint says, readably, that n8n
+# no longer offers the owner setup (userManagement.showSetupOnFirstLoad is false). Fails closed.
+n8n_setup_still_offered() {
+  local body
+  body="$(curl -fsS --max-time 30 http://127.0.0.1:5678/rest/settings 2>/dev/null)" || return 0
+  [ "$(jq -r '(.data // .) | .userManagement.showSetupOnFirstLoad' <<<"$body" 2>/dev/null)" = false ] || return 0
+  return 1
+}
+
+# app_expose: first refuses while n8n still offers the owner setup (the loopback port is still
+# published then), so an n8n without an owner is never put on the internet.
 app_expose() {
+  if n8n_setup_still_offered; then
+    log "n8n: refusing to expose, the owner setup is still offered or its state is unreadable"
+    return 1
+  fi
   : >"$(app_data_dir)/exposed"
   set_site_mode app
   if ! app_compose up -d; then
@@ -192,11 +237,12 @@ app_expose() {
   fi
 }
 
-# n8n must answer /healthz over HTTPS on the server's own name with a valid certificate. The body is
-# captured first: a pipe into grep -q can fail curl with error 23 under pipefail.
+# n8n must answer /healthz/readiness over HTTPS on the server's own name with a valid certificate,
+# so ready means the editor works. The body is captured first: a pipe into grep -q can fail curl
+# with error 23 under pipefail.
 app_ready_check() {
   local body
-  body="$(curl -fsS --max-time 10 --resolve "$VA_HOST:443:127.0.0.1" "https://$VA_HOST/healthz")" || return 1
+  body="$(curl -fsS --max-time 10 --resolve "$VA_HOST:443:127.0.0.1" "https://$VA_HOST/healthz/readiness")" || return 1
   grep -q '"status":"ok"' <<<"$body"
 }
 
