@@ -12,6 +12,8 @@
 #                               once the marker exists
 #   app_domain_added <domain>   apply /etc/vps-apps/domains to the labels
 #   app_domain_check <domain>   optional: return 1 with a message when the app takes no extra domain
+#   app_fill_env <env>          optional: add to <env> itself what a newer release of the app needs,
+#                               keeping every value; rc update runs it first, before any resolution
 #   app_update_env <env> <out>  optional: write to <out> what rc update makes of the app .env, without
 #                               writing <env>; fails when an image cannot be resolved. Without it, rc
 #                               update re-resolves the images (resolve_env_images in lib/images.sh)
