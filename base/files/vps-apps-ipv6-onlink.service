@@ -1,7 +1,8 @@
 [Unit]
 Description=vps-apps on-link flag for an IPv6 gateway outside the VPS prefix, before networkd reads netplan's output
-# systemd's netplan generator has run from the netplan files before any unit; the runner fixes them
-# and generates /run/systemd/network again before networkd starts.
+# Runs before every start of systemd-networkd: at boot, and whenever netplan apply or a package
+# upgrade restarts it. At boot, systemd's netplan generator has run from the netplan files before
+# any unit; the runner fixes them and generates /run/systemd/network again before networkd starts.
 DefaultDependencies=no
 After=local-fs.target
 # The node-side Virtualizor hook may install a unit with the same job: never both on the file at
