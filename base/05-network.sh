@@ -24,9 +24,28 @@ net_generate() {
   fi
 }
 
+# net_ping6_ok: one IPv6 ping to VA_PING6_TARGET answered.
+net_ping6_ok() {
+  ping -6 -c1 -W3 "$VA_PING6_TARGET" >/dev/null 2>&1
+}
+
 # net_route <device> <gateway>: the fixed route on the running system now, without netplan apply
 # (which would reconfigure the live network in the middle of the install). Failures are logged.
+# Nothing is added when IPv6 already answered before the first live route (a route learned from
+# router advertisements, say): the fixed file is enough then, from the next boot.
 net_route() {
+  if [ -z "$VA_NET_V6_BEFORE" ]; then
+    VA_NET_V6_BEFORE=no
+    if net_ping6_ok; then
+      VA_NET_V6_BEFORE=yes
+    fi
+  fi
+  if [ "$VA_NET_V6_BEFORE" = yes ]; then
+    log "network: IPv6 already answers, so the live route via $2 on $1 is not added; netplan sets it up at the next boot"
+    return 0
+  fi
+  # A host route to the gateway on this link: the kernel then reaches the gateway directly, as the
+  # on-link flag tells it to, although the address lies outside the interface's prefix.
   ip -6 route replace "$2" dev "$1" || log "network: ip -6 route replace $2 dev $1 failed"
   ip -6 route replace default via "$2" dev "$1" onlink ||
     log "network: ip -6 route replace default via $2 dev $1 onlink failed"
@@ -92,9 +111,14 @@ net_fix_file() {
     fi
     return 0
   fi
-  while read -r dev gw; do
+  while read -r dev gw keys; do
     log "network: $file: on-link added to the IPv6 default route via $gw on $dev (original: $backup/$name.orig)"
-    net_route "$dev" "$gw"
+    # A plain live default route would not be the one this route item describes.
+    if [ -n "$keys" ]; then
+      log "network: the route via $gw on $dev has ${keys//,/, }, so the live route is not added; netplan sets it up at the next boot"
+    else
+      net_route "$dev" "$gw"
+    fi
   done <<<"$fixes"
 }
 
@@ -125,7 +149,7 @@ net_fix_all() {
 
 # net_ping6: whether IPv6 answers now, for the install log only.
 net_ping6() {
-  if ping -6 -c1 -W3 "$VA_PING6_TARGET" >/dev/null 2>&1; then
+  if net_ping6_ok; then
     log "network: IPv6 ping to $VA_PING6_TARGET answered"
   else
     log "network: IPv6 ping to $VA_PING6_TARGET got no reply"
@@ -135,6 +159,6 @@ net_ping6() {
 # base_network: the step. Its body runs as a condition, so errexit is off inside: every command that
 # matters checks its own result above, and nothing here can fail the install.
 base_network() {
-  VA_NET_CHANGED=0 VA_NET_BASELINE=""
+  VA_NET_CHANGED=0 VA_NET_BASELINE="" VA_NET_V6_BEFORE=""
   { net_fix_all; net_ping6; } || true
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test stub: logs argv to STUB_TMP/ping.log. Exits with the code in STUB_TMP/ping_rc when that file
-# exists (1 is no reply), else 0.
+# Test stub: logs argv to STUB_TMP/ping.log. No reply (exit 1), as on a VPS whose IPv6 route is
+# missing, unless STUB_TMP/ping_rc holds another exit code (0 is a reply).
 printf '%s\n' "$*" >>"${STUB_TMP:?}/ping.log"
 if [ -f "$STUB_TMP/ping_rc" ]; then exit "$(cat "$STUB_TMP/ping_rc")"; fi
-exit 0
+exit 1
