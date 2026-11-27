@@ -78,6 +78,8 @@ On a server installed before n8n ran on UTC, schedules move from America/New_Yor
 
 Nextcloud on Postgres, with Valkey for caching and file locking. Nextcloud is installed and its admin account (login `admin`, with your password) is created before Nextcloud is reachable from the internet, and nobody can sign up. If your password does not meet Nextcloud's password policy (at least 10 characters, not a common or leaked password), a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
 
+While Nextcloud installs, `occ maintenance:install` takes the database password only as a command-line argument, so the Postgres superuser password from `/opt/vps-apps-data/nextcloud/.env` is on php's command line in the Nextcloud container for as long as that one command runs, visible in the server's process list. It is used only for the install, since Nextcloud then makes its own database login with a password of its own, and it is not your admin password.
+
 Background jobs run every five minutes in their own container (cron mode). Calendar and contacts apps find CalDAV and CardDAV on their own, through the standard well-known addresses.
 
 Add more domains with `rc domain add <domain>`. Nextcloud trusts and serves every name, and the newest one becomes the address in the links that background jobs write (`overwrite.cli.url`).
@@ -102,7 +104,7 @@ Forgejo runs from its `15-rootless` tag, the long-term support release (supporte
 
 ### wordpress
 
-WordPress on MariaDB. The site and its admin account (login `admin`, with your password) are set up before WordPress is reachable from the internet, so nobody else can run its installer. The admin email is your `--admin-email`, or `admin@<your host>`. Registration stays off. Log in at `https://<your host>/wp-admin/`. If your password is not 1 to 255 printable ASCII characters without a space at either end, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+WordPress on MariaDB. The site and its admin account (login `admin`, with your password) are set up before WordPress is reachable from the internet, so nobody else can run its installer. The admin email is your `--admin-email`, or `admin@<your host>`. Registration stays off. The proxy answers `/xmlrpc.php` with 403, because XML-RPC lets one request try hundreds of passwords; apps and plugins that use XML-RPC do not work. Log in at `https://<your host>/wp-admin/`. If your password is not 1 to 255 printable ASCII characters without a space at either end, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
 
 WordPress runs on PHP 8.4 (the `php8.4-apache` tag) and MariaDB 12.3, its long-term support series. The database passwords and WordPress's keys and salts are generated on the server, and uploads can be up to 64 MB.
 
