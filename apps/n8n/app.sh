@@ -12,7 +12,9 @@
 # and sent on stdin; it is in no compose file, env file or container environment.
 
 VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VA_N8N_IMAGE_REF="docker.n8n.io/n8nio/n8n:latest"
+# n8n's stable tag is its newest stable release (beta and next carry the betas, and there is no tag
+# per major version).
+VA_N8N_IMAGE_REF="docker.n8n.io/n8nio/n8n:stable"
 VA_N8N_POSTGRES_IMAGE_REF="postgres:16-alpine"
 VA_N8N_VALKEY_IMAGE_REF="valkey/valkey:8-alpine"
 
