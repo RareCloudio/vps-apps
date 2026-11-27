@@ -1,0 +1,22 @@
+# Prometheus, the metrics store Grafana reads on the internal network. app.sh copies this file to
+# /opt/vps-apps-data/grafana/config/prometheus/ and compose.yml mounts that directory read-only.
+#
+# It scrapes itself. The server's own metrics (node-exporter) arrive through remote write from the
+# agent in prometheus-agent.yml, because node-exporter runs in the host's network namespace, which
+# no container can reach through the host firewall (compose.yml says why).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# 15 days of metrics, and never more than 4 GB on disk, whichever comes first
+# (https://prometheus.io/docs/prometheus/3.16/configuration/configuration/#tsdb).
+storage:
+  tsdb:
+    retention:
+      time: 15d
+      size: 4GB
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

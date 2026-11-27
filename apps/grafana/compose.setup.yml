@@ -1,0 +1,10 @@
+# Before exposure: Grafana and Loki answer on the server's own loopback only, so the admin password
+# is set and the stack is checked before anyone else can reach it. On its first start Grafana makes
+# the admin with its default password, which app.sh replaces through Grafana's CLI.
+services:
+  grafana:
+    ports:
+      - "127.0.0.1:3000:3000"
+  loki:
+    ports:
+      - "127.0.0.1:3100:3100"

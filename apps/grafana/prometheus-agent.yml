@@ -1,0 +1,15 @@
+# The Prometheus agent (Prometheus in --agent mode), in the host's network namespace next to
+# node-exporter. It scrapes node-exporter on the host's loopback and sends the samples to the main
+# Prometheus through its remote write receiver, published on the host's loopback only
+# (https://prometheus.io/docs/prometheus/3.16/prometheus_agent/ and
+# https://prometheus.io/blog/2021/11/16/agent/). app.sh copies this file next to prometheus.yml.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+
+remote_write:
+  - url: http://127.0.0.1:9090/api/v1/write

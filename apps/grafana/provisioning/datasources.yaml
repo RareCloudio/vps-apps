@@ -1,0 +1,22 @@
+# Grafana's two data sources, provisioned from a file at every start
+# (https://grafana.com/docs/grafana/v13.3/administration/provisioning/#data-sources). Both are reached
+# by Grafana's server on the stack's internal network, never by the browser. The UIDs are fixed, so
+# the starter dashboard and API calls can name them.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: vps-apps-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+  - name: Loki
+    uid: vps-apps-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false

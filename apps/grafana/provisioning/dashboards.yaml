@@ -1,0 +1,15 @@
+# The starter dashboard, loaded from the directory compose.yml mounts at
+# /etc/grafana/vps-apps-dashboards (https://grafana.com/docs/grafana/v13.3/administration/provisioning/#dashboards).
+# It cannot be deleted or saved over from the UI, so an update of this app can replace it; a copy
+# saved under another name is the customer's own.
+apiVersion: 1
+
+providers:
+  - name: vps-apps
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/vps-apps-dashboards

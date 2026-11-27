@@ -1,0 +1,39 @@
+# After exposure: the caddy labels serve Grafana on the server's names (VA_SITE_ADDRS in the app .env)
+# and, on the same names, Loki's push path only, behind basic auth. caddy-docker-proxy merges the two
+# containers' labels into one site block, and Caddy runs the handle block before the catch-all
+# reverse_proxy (https://caddyserver.com/docs/caddyfile/directives#directive-order). The path matcher
+# is exact, so Loki's query API and every other Loki path are never public: they reach Grafana, which
+# has no such page and sends a visitor without a login to its login page. The default network is kept
+# for the data sources; web is the proxy's network.
+services:
+  grafana:
+    networks:
+      - default
+      - web
+    environment:
+      # Once exposed, Grafana never makes a new admin with its default password, even if its user
+      # table were ever emptied.
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+      # Grafana takes the client address from X-Real-IP first, and Caddy passes a client's own
+      # header through; this sets it to the address Caddy sees (pkg/web/context.go, RemoteAddr).
+      caddy.reverse_proxy.header_up: "X-Real-IP {remote_host}"
+
+  loki:
+    networks:
+      - default
+      - web
+    # The ingest credential: user loki, its bcrypt hash made by caddy hash-password at install
+    # (https://caddyserver.com/docs/caddyfile/directives/basic_auth). The plain password is in
+    # /root/vps-apps-credentials.txt.
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.handle: /loki/api/v1/push
+      caddy.handle.basic_auth.loki: ${LOKI_PUSH_HASH:?LOKI_PUSH_HASH is not set}
+      caddy.handle.reverse_proxy: "{{upstreams 3100}}"
+
+networks:
+  web:
+    external: true
