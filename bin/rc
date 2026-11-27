@@ -6,16 +6,97 @@ RC_ROOT="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # shellcheck source=/dev/null
 . "$RC_ROOT/lib/common.sh"
 # shellcheck source=/dev/null
+. "$RC_ROOT/lib/images.sh"
+# shellcheck source=/dev/null
 . "$RC_ROOT/base/50-firewall.sh"
+# shellcheck source=/dev/null
+. "$RC_ROOT/base/60-proxy.sh"
 
 rc_usage() {
   {
     echo "usage: rc <command> [...]"
+    echo "  rc status                         the install status and the app's containers"
+    echo "  rc logs [service]                 follow the app's logs"
+    echo "  rc update                         pull the newest images and restart the app and the proxy"
+    echo "  rc domain add <domain>            serve the app on one more domain"
     echo "  rc port open <port>[/tcp|/udp]    open a host or container port"
     echo "  rc port close <port>[/tcp|/udp]   close it again"
     echo "  rc port list                      show the opened ports"
   } >&2
   exit 2
+}
+
+# rc_load_env: read APP, VA_HOST and VA_IP from /etc/vps-apps/env as data (never sourced) into
+# VA_APP, VA_HOST and VA_IP. Exits 1 when the file is missing or a value is not valid.
+rc_load_env() {
+  local file key value octet ip_re host_re
+  file="$(p /etc/vps-apps/env)"
+  if [ ! -r "$file" ]; then
+    echo "rc: $file is missing, no app is installed on this server" >&2
+    exit 1
+  fi
+  VA_APP="" VA_HOST="" VA_IP=""
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    case "$key" in
+      APP) VA_APP="$value" ;;
+      VA_HOST) VA_HOST="$value" ;;
+      VA_IP) VA_IP="$value" ;;
+    esac
+  done <"$file"
+  octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+  ip_re="^${octet}(\\.${octet}){3}\$"
+  host_re='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+  VA_HOST="${VA_HOST,,}"
+  case "$VA_APP" in docker | n8n) ;; *)
+    echo "rc: $file has no valid APP" >&2
+    exit 1
+    ;;
+  esac
+  if ! [[ "$VA_HOST" =~ $host_re && "$VA_IP" =~ $ip_re ]]; then
+    echo "rc: $file has no valid VA_HOST and VA_IP" >&2
+    exit 1
+  fi
+}
+
+# rc_load_app: rc_load_env, then load the installed app's hooks. The app provides
+#   app_compose_files        print the absolute path of each compose file, one per line
+#   app_domain_added <host>  apply /etc/vps-apps/domains (this host was just added)
+rc_load_app() {
+  local app_sh
+  rc_load_env
+  app_sh="$(p "/opt/vps-apps/current/apps/$VA_APP/app.sh")"
+  if [ ! -f "$app_sh" ]; then
+    echo "rc: $app_sh is missing" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  . "$app_sh"
+}
+
+# rc_compose <docker compose args...>: docker compose for the installed app, with the compose files
+# the app names and its .env under /opt/vps-apps-data/<app>/.
+rc_compose() {
+  local f
+  local -a args=()
+  while IFS= read -r f; do
+    [ -z "$f" ] || args+=(-f "$f")
+  done < <(app_compose_files)
+  if [ "${#args[@]}" -eq 0 ]; then
+    echo "rc: the app names no compose file" >&2
+    exit 1
+  fi
+  docker compose "${args[@]}" --env-file "$(p "/opt/vps-apps-data/$VA_APP/.env")" "$@"
+}
+
+# rc_require_serving: the app answers on its own domain (site mode app); before that there is
+# nothing to update and no label to extend.
+rc_require_serving() {
+  local mode=""
+  [ ! -r "$(p /var/lib/vps-apps/site-mode)" ] || mode="$(cat "$(p /var/lib/vps-apps/site-mode)")"
+  if [ "$mode" != app ]; then
+    echo "rc: the app is not serving yet (rc status shows the install progress)" >&2
+    exit 1
+  fi
 }
 
 # A non-empty VPS_APPS_ROOT is a test root, where root is not needed.
