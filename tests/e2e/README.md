@@ -48,7 +48,7 @@ host stops answering over ssh, the probe FAILs instead of reading it as "closed"
 | 4 | n8n | login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
 | 5 | docker | whoami over HTTPS; postgres on 5432 closed, `rc port open`, restarts of docker and `vps-apps-nft`, `rc port close`, on IPv4 and IPv6 (docker only). Port 22 is probed first as a positive control |
 | 6 | resume | install killed after `app_up_setup`, the timer resumes it, same `.env` checksum (fresh OS only) |
-| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables follow |
+| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving |
 | 8 | hub-64 | records the VPS IPv6 /64; the image pull count and Docker Hub rate limit headers are taken the moment the install is ready (before any restart), or reported as unreliable when that moment was not seen in this run |
 | 9 | timer | three minutes after ready: still ready, timer inactive and disabled, password file gone |
 | 10 | docker-info | `docker info` works with the `daemon.json` (firewall-backend iptables) |

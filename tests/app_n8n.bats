@@ -350,7 +350,14 @@ merged_config() {
   [ "$status" -ne 0 ]
 }
 
-@test "app_domain_added rewrites the address list and recreates n8n; the primary URL stays the host" {
+# urls_are <host>: the three n8n URL variables in the .env name this host.
+urls_are() {
+  grep -qxF "WEBHOOK_URL=https://$1/" "$DATA/.env"
+  grep -qxF "N8N_EDITOR_BASE_URL=https://$1" "$DATA/.env"
+  grep -qxF "N8N_HOST=$1" "$DATA/.env"
+}
+
+@test "app_domain_added serves both names and moves the three URL variables to the new domain" {
   app_prepare
   cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
   mkdir -p "$(p /etc/vps-apps)"
@@ -358,13 +365,33 @@ merged_config() {
   : >"$STUB_TMP/docker.log"
   app_domain_added www.example.org
   grep -qxF 'VA_SITE_ADDRS="n.example.com www.example.org"' "$DATA/.env"
-  grep -qxF 'WEBHOOK_URL=https://n.example.com/' "$DATA/.env"
-  grep -qxF 'N8N_EDITOR_BASE_URL=https://n.example.com' "$DATA/.env"
-  grep -qxF 'N8N_HOST=n.example.com' "$DATA/.env"
+  urls_are www.example.org
   [ "$(stat -c %a "$DATA/.env")" = 600 ]
   # Every secret and image line is untouched.
-  diff <(grep -vE '^(VA_SITE_ADDRS)=' "$BATS_TEST_TMPDIR/before") <(grep -vE '^(VA_SITE_ADDRS)=' "$DATA/.env")
+  diff <(grep -vE '^(VA_SITE_ADDRS|WEBHOOK_URL|N8N_EDITOR_BASE_URL|N8N_HOST)=' "$BATS_TEST_TMPDIR/before") \
+    <(grep -vE '^(VA_SITE_ADDRS|WEBHOOK_URL|N8N_EDITOR_BASE_URL|N8N_HOST)=' "$DATA/.env")
   grep -q 'compose .* up -d' "$STUB_TMP/docker.log"
+}
+
+@test "each domain added later takes the URL variables over; the server's own name stays served" {
+  app_prepare
+  mkdir -p "$(p /etc/vps-apps)"
+  printf 'one.example.org\n' >"$(p /etc/vps-apps/domains)"
+  app_domain_added one.example.org
+  printf 'one.example.org\ntwo.example.org\n' >"$(p /etc/vps-apps/domains)"
+  app_domain_added two.example.org
+  grep -qxF 'VA_SITE_ADDRS="n.example.com one.example.org two.example.org"' "$DATA/.env"
+  urls_are two.example.org
+  # Adding one again (rc keeps the list as it is) makes it the main address again.
+  app_domain_added one.example.org
+  urls_are one.example.org
+  grep -qxF 'VA_SITE_ADDRS="n.example.com one.example.org two.example.org"' "$DATA/.env"
+}
+
+@test "an invalid domain given to app_domain_added leaves the URL variables on the host" {
+  app_prepare
+  app_domain_added 'bad domain;id'
+  urls_are n.example.com
 }
 
 @test "n8n defines no app_domain_check, so rc domain add accepts extra domains" {

@@ -66,7 +66,7 @@ n8n on Postgres, behind HTTPS on your domain. The owner account (your `--admin-e
 - `--mode starter`: n8n and Postgres.
 - `--mode pro`: queue mode with Valkey and two workers, for heavier workflows.
 
-Add more domains with `rc domain add <domain>`.
+Add more domains with `rc domain add <domain>`. The newest one becomes n8n's main address, used in webhook URLs and editor links, and every earlier name keeps working.
 
 ## The `rc` command
 

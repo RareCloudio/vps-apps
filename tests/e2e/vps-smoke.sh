@@ -752,9 +752,9 @@ check_7_domain() {
       { fail "https://$domain/healthz/readiness does not answer"; return 1; }
     r="$(vscript "$HOST" "$domain" <<'EOF'
 envf=/opt/vps-apps-data/n8n/.env
-grep -qxF "WEBHOOK_URL=https://$1/" "$envf" || { echo "env WEBHOOK_URL"; exit 1; }
-grep -qxF "N8N_EDITOR_BASE_URL=https://$1" "$envf" || { echo "env N8N_EDITOR_BASE_URL"; exit 1; }
-grep -qxF "N8N_HOST=$1" "$envf" || { echo "env N8N_HOST"; exit 1; }
+grep -qxF "WEBHOOK_URL=https://$2/" "$envf" || { echo "env WEBHOOK_URL"; exit 1; }
+grep -qxF "N8N_EDITOR_BASE_URL=https://$2" "$envf" || { echo "env N8N_EDITOR_BASE_URL"; exit 1; }
+grep -qxF "N8N_HOST=$2" "$envf" || { echo "env N8N_HOST"; exit 1; }
 grep -qxF "VA_SITE_ADDRS=\"$1 $2\"" "$envf" || { echo "env VA_SITE_ADDRS"; exit 1; }
 n=0
 for c in $(docker ps -q); do
@@ -763,9 +763,9 @@ for c in $(docker ps -q); do
     n8n | n8n-worker)
       n=$((n+1))
       e="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c")"
-      printf '%s\n' "$e" | grep -qxF "WEBHOOK_URL=https://$1/" || { echo "container $s WEBHOOK_URL"; exit 1; }
-      printf '%s\n' "$e" | grep -qxF "N8N_EDITOR_BASE_URL=https://$1" || { echo "container $s N8N_EDITOR_BASE_URL"; exit 1; }
-      printf '%s\n' "$e" | grep -qxF "N8N_HOST=$1" || { echo "container $s N8N_HOST"; exit 1; }
+      printf '%s\n' "$e" | grep -qxF "WEBHOOK_URL=https://$2/" || { echo "container $s WEBHOOK_URL"; exit 1; }
+      printf '%s\n' "$e" | grep -qxF "N8N_EDITOR_BASE_URL=https://$2" || { echo "container $s N8N_EDITOR_BASE_URL"; exit 1; }
+      printf '%s\n' "$e" | grep -qxF "N8N_HOST=$2" || { echo "container $s N8N_HOST"; exit 1; }
       ;;
   esac
 done
