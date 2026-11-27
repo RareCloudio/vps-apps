@@ -278,6 +278,43 @@ APP
   refute_grep -q ' pull$' "$STUB_TMP/docker.log"
 }
 
+@test "rc update prints what the app's app_update_env says only once every image resolved" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=lucaslorentz/caddy-docker-proxy:2.13.1-alpine\n' "$ZEROS" >"$PROXY/.env"
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_update_env() { echo "the app moves to 9.9.9"; resolve_env_images "$1" "$2"; }
+APP
+  printf 'lucaslorentz' >"$STUB_TMP/inspect_fail_match"
+  run "$RC" update
+  [ "$status" -eq 1 ]
+  refute_grep -qF 'moves to' <<<"$output"
+  rm "$STUB_TMP/inspect_fail_match"
+  run "$RC" update
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "the app moves to 9.9.9" ]
+  [ "${lines[${#lines[@]} - 1]}" = updated ]
+}
+
+@test "rc update on n8n says nothing about a move when the proxy image cannot be resolved" {
+  real_n8n_app
+  repo=docker.n8n.io/n8nio/n8n
+  hex() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+  printf '%s\n' "N8N_IMAGE=$repo@sha256:$(hex installed)" "N8N_IMAGE_REF=$repo:stable" \
+    "POSTGRES_IMAGE=postgres@$ZEROS" POSTGRES_IMAGE_REF=postgres:16-alpine >"$DATA/.env"
+  chmod 600 "$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=lucaslorentz/caddy-docker-proxy:2.13.1-alpine\n' "$ZEROS" >"$PROXY/.env"
+  printf '%s 2.49.8\n%s 3.0.0\n%s 2.50.2\n' "$(hex installed)" "$(hex "$repo:stable")" "$(hex "$repo:2.50.2")" \
+    >"$STUB_TMP/registry_versions"
+  hex installed >"$STUB_TMP/local_images"
+  printf '[{"tag_name":"n8n@2.50.2","prerelease":false,"draft":false}]' >"$STUB_TMP/curl_body"
+  printf 'lucaslorentz' >"$STUB_TMP/inspect_fail_match"
+  run "$RC" update
+  [ "$status" -eq 1 ]
+  refute_grep -qF 'moves to' <<<"$output"
+  [[ "$output" == *"no image changed"* ]]
+  grep -qxF "N8N_IMAGE=$repo@sha256:$(hex installed)" "$DATA/.env"
+}
+
 @test "refresh_image_digests appends a missing image line and leaves other lines alone" {
   printf 'A=1\nB_IMAGE_REF=repo/b:2\n' >"$BATS_TEST_TMPDIR/e.env"
   refresh_image_digests "$BATS_TEST_TMPDIR/e.env"

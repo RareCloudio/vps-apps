@@ -26,13 +26,16 @@ rc_update() {
   fi
 
   tmp="$(mktemp -d)"
-  if ! { "$resolve_app" "$app_env" "$tmp/app" && resolve_env_images "$proxy/.env" "$tmp/proxy"; }; then
+  # What the hook says (on stdout) is held back until every image resolved and both files are
+  # written, so it never announces a change that did not happen.
+  if ! { "$resolve_app" "$app_env" "$tmp/app" >"$tmp/said" && resolve_env_images "$proxy/.env" "$tmp/proxy"; }; then
     rm -rf "$tmp"
     echo "rc update: could not resolve every image digest, no image changed" >&2
     exit 1
   fi
   apply_env_images "$app_env" "$tmp/app"
   apply_env_images "$proxy/.env" "$tmp/proxy"
+  cat "$tmp/said"
   rm -rf "$tmp"
 
   rc_compose pull
