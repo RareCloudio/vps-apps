@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Test stub: answers the default-route lookups. STUB_TMP/ip_empty empties "route get";
-# STUB_TMP/ip6_none removes the IPv6 default route.
+# STUB_TMP/ip6_none removes the IPv6 default route. "-6 route replace" prints nothing and fails
+# when STUB_TMP/fail_ip_route_replace exists.
 printf '%s\n' "$*" >>"${STUB_TMP:?}/ip.log"
 case "$*" in
   "-4 route show default") echo "default via 85.121.120.1 dev eth0 proto static" ;;
   "-6 route show default") [ -e "$STUB_TMP/ip6_none" ] || echo "default via fe80::1 dev eth0 proto ra metric 1024 pref medium" ;;
+  "-6 route replace "*)
+    if [ -e "$STUB_TMP/fail_ip_route_replace" ]; then
+      echo "RTNETLINK answers: No such device" >&2
+      exit 2
+    fi
+    ;;
   *)
     [ -e "$STUB_TMP/ip_empty" ] && exit 0
     echo "1.1.1.1 via 85.121.120.1 dev eth0 src 85.121.120.207 uid 0"
