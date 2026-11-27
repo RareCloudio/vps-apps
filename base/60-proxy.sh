@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 6: the HTTPS reverse proxy (caddy-docker-proxy behind a socket proxy), the install
+# Base step 7: the HTTPS reverse proxy (caddy-docker-proxy behind a socket proxy), the install
 # status over HTTP, the landing pages and the wait for DNS. Sourced after lib/common.sh and
 # lib/images.sh, never executed.
 

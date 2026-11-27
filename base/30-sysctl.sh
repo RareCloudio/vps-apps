@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Base step 3: kernel hardening baseline. Sourced, never executed.
+# Base step 4: kernel hardening baseline. Sourced, never executed.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
