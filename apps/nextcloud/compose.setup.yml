@@ -1,0 +1,6 @@
+# Before exposure: Nextcloud answers on the server's own loopback only, so it is installed and its
+# admin account created before anyone else can reach its installer.
+services:
+  nextcloud:
+    ports:
+      - "127.0.0.1:8080:80"
