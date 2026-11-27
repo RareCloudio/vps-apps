@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# vps-apps-ipv6-onlink: give every IPv6 default route whose gateway lies outside the interface's own
+# prefix the on-link: true it needs, in each /etc/netplan/*.yaml. Without it systemd-networkd never
+# installs the route: IPv6 does not work, and the boot waits two minutes for the network.
+#
+# The vps-apps network step installs this as /usr/local/sbin/vps-apps-ipv6-onlink and runs it once
+# at install; vps-apps-ipv6-onlink.service runs it at every boot, before systemd-networkd, because a
+# restart from the Virtualizor panel rewrites the panel's netplan file before the VM boots. systemd's
+# netplan generator has already run from that file by then; this script's netplan generate writes
+# /run/systemd/network again from the fixed file, before networkd reads it.
+#
+# /usr/local/lib/vps-apps/netplan-onlink.py decides which routes need the flag and makes the change
+# (one inserted line). A file is changed only when netplan generate accepts the netplan files as
+# they are. Then the original is kept once as /var/lib/vps-apps/backup/netplan/<name>.orig (a
+# backup that exists is never replaced), the file is replaced whole with its own mode, and netplan
+# generate must accept it, or the file is put back byte for byte and generated again. A file that
+# is a symlink is left alone. Nothing here touches the running network.
+#
+# Messages go to stdout (the journal at boot, the install log at install). Every message carries
+# only the first line of netplan's or the checker's output: the install log is world-readable, and
+# netplan's errors quote the file, which can hold a wifi password or a key. Always exits 0: a boot
+# must never fail or wait on this. With VA_ONLINK_FIXES=<file>, each fix that is kept is appended
+# there as netplan-onlink.py prints it ("<device> <gateway> [<keys>]"), for the install's live
+# route. A non-empty VPS_APPS_ROOT is a test root that every path is under.
+
+root="${VPS_APPS_ROOT:-}"
+checker="$root/usr/local/lib/vps-apps/netplan-onlink.py"
+state="$root/var/lib/vps-apps"
+backup="$state/backup/netplan"
+baseline=""
+changed=0
+
+say() {
+  printf '%s\n' "$*"
+}
+
+# generate: netplan generate, which checks every netplan file and writes the backend files from them
+# without touching the running network. Under a test root it reads the files there.
+generate() {
+  if [ -n "$root" ]; then
+    netplan generate --root-dir "$root"
+  else
+    netplan generate
+  fi
+}
+
+# write_whole <dest> <mode>: stdin as <dest>, through a temp file in its directory and a rename, as
+# write_atomic in lib/common.sh does (this script runs at boot on its own and cannot source it).
+write_whole() {
+  local tmp
+  tmp="$(mktemp "${1%/*}/.tmp.XXXXXX")" || return 1
+  if ! { cat >"$tmp" && chmod "$2" "$tmp" && mv -f "$tmp" "$1"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# baseline_ok: 0 when netplan generate accepts the netplan files as they are, checked once, before
+# the first change. When it fails, no file is changed: a change it rejected could not be told apart
+# from the fault that was already there.
+baseline_ok() {
+  local out
+  if [ -z "$baseline" ]; then
+    if out="$(generate 2>&1)"; then
+      baseline=ok
+    else
+      baseline=invalid
+      say "netplan generate fails before any change, so netplan is already invalid; the netplan files are left as they are: ${out%%$'\n'*}"
+    fi
+  fi
+  [ "$baseline" = ok ]
+}
+
+# fix_file <file> <work-dir>: the change netplan-onlink.py finds for one file, if any.
+fix_file() {
+  local file="$1" work="$2" name mode fixes out dev gw
+  name="${file##*/}"
+  rm -f "$work/new" "$work/prev" "$work/err"
+  if ! fixes="$(python3 -I "$checker" "$file" "$work/new" 2>"$work/err")"; then
+    out="$(cat "$work/err" 2>/dev/null)"
+    say "cannot check $file, left as it is: ${out%%$'\n'*}"
+    return 0
+  fi
+  [ -n "$fixes" ] || return 0
+  changed=1
+  baseline_ok || return 0
+  if ! { mode="$(stat -c %a "$file")" && mkdir -p "$backup" && chmod 0700 "$backup" &&
+    { [ -e "$backup/$name.orig" ] || cp -p "$file" "$backup/$name.orig"; } && cat "$file" >"$work/prev"; }; then
+    say "cannot keep a copy of $file, left as it is"
+    return 0
+  fi
+  if ! write_whole "$file" "$mode" <"$work/new"; then
+    say "cannot write $file, left as it is"
+    return 0
+  fi
+  if ! out="$(generate 2>&1)"; then
+    if write_whole "$file" "$mode" <"$work/prev"; then
+      say "netplan generate rejected the change to $file, the original is back: ${out%%$'\n'*}"
+      # The rejected run may have left backend files for the changed version: generate them again.
+      if out="$(generate 2>&1)"; then
+        say "netplan generate after the restore: ok"
+      else
+        say "netplan generate after the restore failed: ${out%%$'\n'*}"
+      fi
+    else
+      say "netplan generate rejected the change to $file, which could not be put back; the original is $backup/$name.orig"
+    fi
+    return 0
+  fi
+  # The generate that accepted the file also wrote the backend files from it: nothing more to run.
+  while read -r dev gw _; do
+    say "$file: on-link added to the IPv6 default route via $gw on $dev (original: $backup/$name.orig)"
+  done <<<"$fixes"
+  if [ -n "${VA_ONLINK_FIXES:-}" ]; then
+    printf '%s\n' "$fixes" >>"$VA_ONLINK_FIXES" || say "cannot record the fixes in $VA_ONLINK_FIXES"
+  fi
+}
+
+main() {
+  local work f
+  if ! command -v python3 >/dev/null 2>&1; then
+    say "python3 is missing, the netplan files are not checked"
+    return 0
+  fi
+  if [ ! -r "$checker" ]; then
+    say "cannot read $checker, the netplan files are not checked"
+    return 0
+  fi
+  if ! { mkdir -p "$state" && work="$(mktemp -d "$state/.network.XXXXXX")"; } 2>/dev/null; then
+    say "cannot make a work directory in $state, the netplan files are not checked"
+    return 0
+  fi
+  for f in "$root/etc/netplan"/*.yaml; do
+    # Replacing a link would put a regular file in its place and leave its target as it was.
+    if [ -L "$f" ]; then
+      say "$f is a symlink, left as it is"
+      continue
+    fi
+    [ -f "$f" ] || continue
+    fix_file "$f" "$work"
+  done
+  rm -rf "$work"
+  [ "$changed" = 1 ] || say "the netplan files need no change"
+}
+
+main
+exit 0

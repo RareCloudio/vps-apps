@@ -9,7 +9,8 @@ cd "$(dirname "$0")/.."
 # index mode; a Windows or /mnt/c worktree hides a missing bit). Tracked files are judged by their
 # index mode, untracked ones by the file itself.
 noexec=0
-for f in install.sh bin/rc bin/render-recipe bin/rc.d/*.sh scripts/*.sh base/*.sh base/files/*-motd tests/stubs/*; do
+for f in install.sh bin/rc bin/render-recipe bin/rc.d/*.sh scripts/*.sh base/*.sh base/files/*-motd \
+  base/files/vps-apps-ipv6-onlink tests/stubs/*; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" != .gitkeep ] || continue
   mode="$(git ls-files -s -- "$f" 2>/dev/null | cut -d' ' -f1)"
@@ -23,7 +24,8 @@ done
 [ "$noexec" -eq 0 ] || exit 1
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(
-  find . -type f \( -name '*.sh' -o -path './bin/*' -o -path './base/files/*-motd' -o -path './recipe/*.tmpl' -o -path './tests/stubs/*' \) \
+  find . -type f \( -name '*.sh' -o -path './bin/*' -o -path './base/files/*-motd' \
+    -o -path './base/files/vps-apps-ipv6-onlink' -o -path './recipe/*.tmpl' -o -path './tests/stubs/*' \) \
     -not -name '.gitkeep' -not -path './.git/*' -not -path './.superpowers/*' | sort
 )
 if [ "${#files[@]}" -eq 0 ]; then
