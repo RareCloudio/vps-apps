@@ -117,7 +117,8 @@ merged_config() {
   want="$(printf '%s' docker.n8n.io/n8nio/n8n:stable | sha256sum | cut -d' ' -f1)"
   grep -qxF "N8N_IMAGE=docker.n8n.io/n8nio/n8n@sha256:$want" "$DATA/.env"
   grep -qF 'image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:stable}' "$APP_DIR/compose.yml"
-  refute_grep -q 'n8n:latest' "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl" "$APP_DIR/app.sh"
+  [ "$VA_N8N_IMAGE_REF" = docker.n8n.io/n8nio/n8n:stable ]
+  refute_grep -q 'n8n:latest' "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl"
 }
 
 @test "the URL variables use the host" {
@@ -750,8 +751,8 @@ env_keys() {
 @test "the update fill adds every key env.tmpl gained since the previous release and keeps every line" {
   old_env
   n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
-  # Every line the server had comes first, byte for byte.
-  head -n 14 "$BATS_TEST_TMPDIR/out" | cmp - "$DATA/.env"
+  # Every line the server had comes first, byte for byte (the image tag has its own test).
+  diff <(head -n 14 "$BATS_TEST_TMPDIR/out" | grep -v '^N8N_IMAGE_REF=') <(grep -v '^N8N_IMAGE_REF=' "$DATA/.env")
   for kv in GENERIC_TIMEZONE=UTC TZ=UTC "${N8N_SECURITY_SETTINGS[@]}"; do
     grep -qxF "$kv" "$BATS_TEST_TMPDIR/out"
   done
@@ -764,7 +765,7 @@ env_keys() {
   old_env
   printf 'GENERIC_TIMEZONE=Europe/Bucharest\nN8N_BLOCK_ENV_ACCESS_IN_NODE=false\nVALKEY_PASSWORD=keep-me\n' >>"$DATA/.env"
   n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
-  head -n 17 "$BATS_TEST_TMPDIR/out" | cmp - "$DATA/.env"
+  diff <(head -n 17 "$BATS_TEST_TMPDIR/out" | grep -v '^N8N_IMAGE_REF=') <(grep -v '^N8N_IMAGE_REF=' "$DATA/.env")
   for k in GENERIC_TIMEZONE N8N_BLOCK_ENV_ACCESS_IN_NODE VALKEY_PASSWORD; do
     [ "$(grep -c "^$k=" "$BATS_TEST_TMPDIR/out")" -eq 1 ]
   done
@@ -1025,4 +1026,17 @@ n8n_image_in() {
   echo 22 >"$STUB_TMP/curl_rc"
   update
   [ "$status" -eq 1 ]
+}
+
+@test "the update fill moves an .env on the previous release's latest tag to stable, and no other tag" {
+  old_env
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  [ "$(grep -c '^N8N_IMAGE_REF=' "$BATS_TEST_TMPDIR/out")" -eq 1 ]
+  grep -qxF "N8N_IMAGE_REF=$N8N_REPO:stable" "$BATS_TEST_TMPDIR/out"
+  # A tag the owner set by hand is left as it is.
+  for ref in "$N8N_REPO:2.49.8" "$N8N_REPO:latest-debian" "n8nio/n8n:latest"; do
+    sed -i "s#^N8N_IMAGE_REF=.*#N8N_IMAGE_REF=$ref#" "$DATA/.env"
+    n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+    grep -qxF "N8N_IMAGE_REF=$ref" "$BATS_TEST_TMPDIR/out"
+  done
 }
