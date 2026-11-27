@@ -1,0 +1,44 @@
+# Forgejo, the rootless image, on SQLite. The secret key, the URL settings and the image digest come
+# from the .env under /opt/vps-apps-data/forgejo (compose reads it through --env-file); the image
+# default only keeps the file valid on its own. Reached through compose.setup.yml before exposure and
+# compose.expose.yml after.
+#
+# Forgejo reads FORGEJO__<section>__<KEY> variables into its app.ini at every start
+# (https://forgejo.org/docs/v15.0/admin/installation/docker/). Two settings are fixed here and never
+# taken from the .env: the web installer stays locked and nobody can sign up.
+name: vps-apps-forgejo
+
+services:
+  forgejo:
+    image: ${FORGEJO_IMAGE:-codeberg.org/forgejo/forgejo:15-rootless}
+    restart: unless-stopped
+    # The rootless image runs as git (1000:1000) and keeps its data and app.ini under /var/lib/gitea.
+    user: "1000:1000"
+    environment:
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      # Without a SECRET_KEY Forgejo falls back to a constant known to everyone.
+      FORGEJO__security__SECRET_KEY: ${FORGEJO_SECRET_KEY:?FORGEJO_SECRET_KEY is not set}
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: ${FORGEJO_REQUIRE_SIGNIN_VIEW:-true}
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__server__DOMAIN: ${FORGEJO_DOMAIN:?FORGEJO_DOMAIN is not set}
+      FORGEJO__server__SSH_DOMAIN: ${FORGEJO_DOMAIN:?FORGEJO_DOMAIN is not set}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:?FORGEJO_ROOT_URL is not set}
+      FORGEJO__server__HTTP_PORT: "3000"
+      # Git over SSH: Forgejo's own SSH server (the only one the rootless image has) on 2222, the port
+      # the clone URLs show and the one compose.expose.yml publishes.
+      FORGEJO__server__START_SSH_SERVER: "true"
+      FORGEJO__server__SSH_PORT: "2222"
+      FORGEJO__server__SSH_LISTEN_PORT: "2222"
+      # Caddy is the only proxy. Images before 16.0 trust X-Forwarded-For from any peer ("*"); only
+      # the Docker networks (Caddy's included) and loopback may set the client address here, and
+      # proxy header login stays off.
+      FORGEJO__security__REVERSE_PROXY_LIMIT: "1"
+      FORGEJO__security__REVERSE_PROXY_TRUSTED_PROXIES: "127.0.0.0/8,::1/128,172.16.0.0/12,192.168.0.0/16"
+      FORGEJO__service__ENABLE_REVERSE_PROXY_AUTHENTICATION: "false"
+      FORGEJO__service__ENABLE_REVERSE_PROXY_AUTHENTICATION_API: "false"
+    volumes:
+      - forgejo_data:/var/lib/gitea
+
+volumes:
+  forgejo_data:

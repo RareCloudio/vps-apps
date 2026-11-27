@@ -1,0 +1,6 @@
+# Before exposure: Forgejo answers on the server's own loopback only, so the admin account is made
+# before anyone else can reach it. Git over SSH is not published yet either.
+services:
+  forgejo:
+    ports:
+      - "127.0.0.1:3000:3000"
