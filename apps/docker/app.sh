@@ -12,6 +12,9 @@
 #                               once the marker exists
 #   app_domain_added <domain>   apply /etc/vps-apps/domains to the labels
 #   app_domain_check <domain>   optional: return 1 with a message when the app takes no extra domain
+#   app_update_env <env> <out>  optional: write to <out> what rc update makes of the app .env, without
+#                               writing <env>; fails when an image cannot be resolved. Without it, rc
+#                               update re-resolves the images (resolve_env_images in lib/images.sh)
 # In site mode app the app's own caddy labels carry VA_HOST; the base Caddyfile has no block for it.
 
 VA_APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
