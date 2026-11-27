@@ -1,0 +1,51 @@
+# The GitHub Actions runner's registration page. The runner itself is not a container: it is the
+# official actions/runner installed on the host (app.sh). The page's image digest and user come from
+# the .env under /opt/vps-apps-data/ghrunner (compose reads it through --env-file); the image default
+# only keeps the file valid on its own. compose.expose.yml adds the proxy labels and the login.
+#
+# The page (apps/_runner-common/page.py) runs as the host's unprivileged user vps-apps-page, on a
+# read-only root filesystem, without capabilities and without the Docker socket. Its only writable
+# path is the inbox on the host's /run, where it leaves a registration request for the root unit; the
+# status it shows is mounted read-only. Missing host paths fail the start instead of being created
+# as root.
+name: vps-apps-ghrunner
+
+services:
+  page:
+    image: ${PAGE_IMAGE:-python:3.14-alpine}
+    restart: unless-stopped
+    user: "${PAGE_UID:?PAGE_UID is not set}:${PAGE_GID:?PAGE_GID is not set}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 32
+    environment:
+      RUNNER_KIND: github
+    # -I: isolated mode, no PYTHON* variables, no user site, no script directory on sys.path.
+    command: ["python3", "-I", "/app/page.py"]
+    volumes:
+      - type: bind
+        source: ../_runner-common/page.py
+        target: /app/page.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/vps-apps-ghrunner/inbox
+        target: /inbox
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/vps-apps-data/ghrunner/status
+        target: /status
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

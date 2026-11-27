@@ -1,0 +1,18 @@
+# After exposure: the caddy labels serve the page on the server's own name and every extra domain
+# (VA_SITE_ADDRS), all behind Caddy's basic auth with the user admin and the bcrypt hash of the order
+# password (RUNNER_PAGE_AUTH_HASH, made by app_create_admin). Compose refuses to start the page here
+# without that hash, so it is never served without the login. The credential stops at Caddy: the
+# Authorization header is not passed to the page. The page joins only the proxy's network.
+services:
+  page:
+    networks:
+      - web
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.basic_auth.admin: ${RUNNER_PAGE_AUTH_HASH:?RUNNER_PAGE_AUTH_HASH is not set}
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+      caddy.reverse_proxy.header_up: "-Authorization"
+
+networks:
+  web:
+    external: true
