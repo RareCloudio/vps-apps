@@ -68,6 +68,19 @@ wait_for_name() {
   done
 }
 
+# proxy_wait_serving: 0 once the proxy serves the status on port 80, 1 after VA_PROXY_TRIES attempts
+# (30) VA_PROXY_INTERVAL seconds apart (2), each capped at 5 seconds. Every failure is retried:
+# docker-proxy accepts the connection before Caddy has loaded its config, and curl then exits 52
+# (empty reply), which curl's own --retry does not retry.
+proxy_wait_serving() {
+  local n=0 tries="${VA_PROXY_TRIES:-30}"
+  until curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/.well-known/rarecloud-app-status; do
+    n=$((n + 1))
+    [ "$n" -lt "$tries" ] || return 1
+    sleep "${VA_PROXY_INTERVAL:-2}"
+  done
+}
+
 base_proxy() {
   local data pub caddy_image socket_image
   data="$(p /opt/vps-apps-data/proxy)"
@@ -88,7 +101,7 @@ base_proxy() {
   docker network inspect web >/dev/null 2>&1 || docker network create web
   docker compose -f "$data/compose.yml" --env-file "$data/.env" up -d
   # The step succeeds only once the proxy answers on port 80.
-  curl -fsS --retry 15 --retry-connrefused --retry-delay 2 http://127.0.0.1/.well-known/rarecloud-app-status || {
+  proxy_wait_serving || {
     log "proxy: nothing answers on port 80"
     return 1
   }
