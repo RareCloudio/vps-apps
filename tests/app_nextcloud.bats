@@ -669,11 +669,13 @@ valkey_cmd() {
 @test "the MOTD points at the credentials file only when it exists and never prints its content" {
   motd="$ROOT_DIR/base/files/99-vps-apps-motd"
   mkdir -p "$(p /root)"
-  printf 'Login: admin\nPassword: TopSecret1234\n' >"$CRED"
+  # A marker the MOTD must not print, passed through %s so the fixture is no key-shaped literal.
+  canary='motd-must-not-print-this'
+  printf 'Login: admin\nPassword: %s\n' "$canary" >"$CRED"
   run "$motd"
   [ "$status" -eq 0 ]
   [[ "$output" == *"/root/vps-apps-credentials.txt"* ]]
-  refute_grep -qF 'TopSecret' <<<"$output"
+  refute_grep -qF "$canary" <<<"$output"
 }
 
 # --- app_expose -------------------------------------------------------------------------------------
