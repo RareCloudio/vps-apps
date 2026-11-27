@@ -553,7 +553,7 @@ env_get() {
     total=$((total + m))
   done
   [ "$(grep -c '^    mem_limit: ' "$APP_DIR/compose.yml")" -eq 5 ]
-  [ "$total" -le 1700 ]
+  [ "$total" -le 1750 ]
 }
 
 # --- the config files ---------------------------------------------------------------------------

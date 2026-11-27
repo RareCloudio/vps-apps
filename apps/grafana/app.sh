@@ -153,7 +153,7 @@ grafana_write_credentials() {
   ) || return 1
   {
     if [ -n "$1" ]; then
-      printf 'Loki log push for this server, for Grafana Alloy, Promtail or any Loki client\n'
+      printf 'Loki log push for this server, for Grafana Alloy or any other Loki client\n'
       printf 'Loki push URL: https://%s%s\nLoki push username: %s\nLoki push password: %s\n' \
         "$VA_HOST" "$VA_GRAFANA_PUSH_PATH" "$VA_GRAFANA_PUSH_USER" "$1"
     fi
