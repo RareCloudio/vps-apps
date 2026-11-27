@@ -182,6 +182,16 @@ status_block() {
   [ "$(wc -l <"$STUB_TMP/dig.log")" -le 2 ]
 }
 
+@test "an unreadable Caddyfile template is refused and leaves the Caddyfile and the site mode alone" {
+  set_site_mode installing
+  cp "$CADDYFILE" "$BATS_TEST_TMPDIR/before"
+  VA_BASE_DIR="$BATS_TEST_TMPDIR/no-such-dir"
+  run set_site_mode failed
+  [ "$status" -ne 0 ]
+  cmp "$CADDYFILE" "$BATS_TEST_TMPDIR/before"
+  [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = installing ]
+}
+
 @test "a non-app mode refuses an empty host and leaves the Caddyfile alone" {
   set_site_mode installing
   cp "$CADDYFILE" "$BATS_TEST_TMPDIR/before"

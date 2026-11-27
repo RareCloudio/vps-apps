@@ -3,6 +3,8 @@
 # Sourced, never executed; bin/rc sources it too for the render and apply helpers.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The last line of files/vps-apps.nft.tmpl: a staged nft file that does not end with it was cut short.
+VA_NFT_LAST_LINE="# End of the vps-apps rules."
 
 # fw_have <command>: true when the command exists (tests override it).
 fw_have() {
@@ -48,9 +50,13 @@ fw_open_ports() {
   fi
 }
 
-# render_nft <open-ports-file>: print the nftables file.
+# render_nft <open-ports-file>: print the nftables file. Fails when the template cannot be read.
 render_nft() {
-  local line entry rules=""
+  local line entry rules="" tmpl="$VA_BASE_DIR/files/vps-apps.nft.tmpl"
+  if [ ! -r "$tmpl" ]; then
+    echo "firewall: cannot read $tmpl" >&2
+    return 1
+  fi
   while IFS= read -r entry; do
     rules+="    ${entry#*/} dport ${entry%/*} accept"$'\n'
   done < <(fw_open_ports "$1")
@@ -63,7 +69,18 @@ render_nft() {
     else
       printf '%s\n' "$line"
     fi
-  done <"$VA_BASE_DIR/files/vps-apps.nft.tmpl"
+  done <"$tmpl"
+}
+
+# fw_nft_whole <file>: the staged nft file holds our table and ends with the template's last line.
+fw_nft_whole() {
+  grep -qxF 'table inet vps_apps {' "$1" && [ "$(tail -n 1 "$1")" = "$VA_NFT_LAST_LINE" ]
+}
+
+# fw_docker_user_whole <file> <ext_if>: the staged DOCKER-USER file drops the outside interface and
+# ends with COMMIT.
+fw_docker_user_whole() {
+  grep -qxF -- "-A DOCKER-USER -i $2 -j DROP" "$1" && [ "$(tail -n 1 "$1")" = COMMIT ]
 }
 
 # render_docker_user <ext_if> <open-ports-file>: print an iptables-restore -n input, valid
@@ -125,7 +142,9 @@ fw_reload_boot_files() {
 
 # fw_apply_staged <dir> <stage-dir> <ports-file>: render into the stage dir, validate every
 # layer, load, and only then move the files into place. Any failure leaves the boot files
-# and open-ports exactly as they were.
+# and open-ports exactly as they were. Callers run it inside a condition, where errexit is off,
+# so every step that matters checks its own result: an empty or cut render (a full disk) must
+# never replace the boot files.
 fw_apply_staged() {
   local dir="$1" stage="$2" ports="$3" if4 if6 v6=no
   fw_open_ports "$ports" >/dev/null || return 1
@@ -139,11 +158,16 @@ fw_apply_staged() {
   if [ -z "$if6" ]; then
     if6="$if4"
   fi
-  render_nft "$ports" >"$stage/vps-apps.nft"
-  render_docker_user "$if4" "$ports" >"$stage/docker-user.v4"
+  render_nft "$ports" >"$stage/vps-apps.nft" || return 1
+  render_docker_user "$if4" "$ports" >"$stage/docker-user.v4" || return 1
   if fw_have ip6tables-restore; then
     v6=yes
-    render_docker_user "$if6" "$ports" >"$stage/docker-user.v6"
+    render_docker_user "$if6" "$ports" >"$stage/docker-user.v6" || return 1
+  fi
+  if ! fw_nft_whole "$stage/vps-apps.nft" || ! fw_docker_user_whole "$stage/docker-user.v4" "$if4" ||
+    { [ "$v6" = yes ] && ! fw_docker_user_whole "$stage/docker-user.v6" "$if6"; }; then
+    echo "firewall: the rendered rules are incomplete (is the disk full?), nothing changed" >&2
+    return 1
   fi
 
   if ! nft -c -f "$stage/vps-apps.nft"; then
@@ -202,7 +226,10 @@ firewall_apply() {
     : >"$dir/open-ports"
     chmod 0644 "$dir/open-ports"
   fi
-  stage="$(mktemp -d "$dir/.apply.XXXXXX")"
+  if ! stage="$(mktemp -d "$dir/.apply.XXXXXX")"; then
+    echo "firewall: cannot create a stage directory in $dir, nothing changed" >&2
+    return 1
+  fi
   fw_apply_staged "$dir" "$stage" "${1:-$dir/open-ports}" || rc=$?
   rm -rf "$stage"
   return "$rc"

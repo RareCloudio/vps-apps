@@ -15,9 +15,10 @@ VA_SOCKET_PROXY_IMAGE_REF="tecnativa/docker-socket-proxy:latest"
 #   failed      HTTPS site for VA_HOST with the failed page
 #   app         no site for VA_HOST here: the app container's labels own it
 # The status on :80 is in every mode. Never reloads caddy: caddy-docker-proxy rebuilds its config
-# from this file and the labels on Docker events and every polling interval.
+# from this file and the labels on Docker events and every polling interval. An unreadable template
+# is refused before anything is written: an empty Caddyfile would take the status off port 80.
 set_site_mode() {
-  local mode="$1" page="" addr="" dir sites="" line
+  local mode="$1" page="" addr="" dir sites="" line tmpl="$VA_BASE_DIR/proxy/Caddyfile.tmpl"
   case "$mode" in
     http-only) page=installing.html addr="http://${VA_HOST:-}" ;;
     installing) page=installing.html addr="${VA_HOST:-}" ;;
@@ -35,6 +36,10 @@ set_site_mode() {
     fi
     sites="$(printf '\n%s {\n\troot * /srv/public\n\thandle /.well-known/rarecloud-app-status {\n\t\theader Content-Type text/plain\n\t\theader Cache-Control no-store\n\t\tfile_server\n\t}\n\thandle {\n\t\trewrite * /%s\n\t\tfile_server\n\t}\n}\n' "$addr" "$page")"
   fi
+  if [ ! -r "$tmpl" ]; then
+    log "set_site_mode: cannot read $tmpl"
+    return 1
+  fi
 
   dir="$(p /etc/vps-apps/caddy)"
   mkdir -p "$dir"
@@ -45,7 +50,7 @@ set_site_mode() {
       else
         printf '%s\n' "${line//@MODE@/$mode}"
       fi
-    done <"$VA_BASE_DIR/proxy/Caddyfile.tmpl"
+    done <"$tmpl"
   } | write_atomic "$dir/Caddyfile" 0644
 
   mkdir -p "$(p /var/lib/vps-apps)"

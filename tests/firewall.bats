@@ -215,6 +215,77 @@ COMMIT'
   done
 }
 
+# apply_once_and_open_5432: boot files in place and one opened port, for the guard tests below.
+apply_once_and_open_5432() {
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  "$RC" port open 5432
+}
+
+@test "an empty nft render (empty template) leaves boot files and open-ports alone and rc port fails" {
+  local copy="$BATS_TEST_TMPDIR/code" before
+  apply_once_and_open_5432
+  before="$(boot_state)"
+  mkdir -p "$copy"
+  cp -r "$BATS_TEST_DIRNAME/../bin" "$BATS_TEST_DIRNAME/../lib" "$BATS_TEST_DIRNAME/../base" "$copy/"
+  : >"$copy/base/files/vps-apps.nft.tmpl"
+  run "$copy/bin/rc" port open 6000
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"nothing changed"* ]]
+  [ "$(boot_state)" = "$before" ]
+}
+
+@test "render_nft fails when the template cannot be read" {
+  VA_BASE_DIR="$BATS_TEST_TMPDIR/no-such-dir"
+  run render_nft "$PORTS"
+  [ "$status" -ne 0 ]
+}
+
+@test "an empty or cut DOCKER-USER render leaves boot files and open-ports alone" {
+  local before
+  apply_once_and_open_5432
+  before="$(boot_state)"
+  printf '5432/tcp\n6000/tcp\n' >"$BATS_TEST_TMPDIR/cand"
+  render_docker_user() { :; }
+  run firewall_apply "$BATS_TEST_TMPDIR/cand"
+  [ "$status" -ne 0 ]
+  [ "$(boot_state)" = "$before" ]
+  # Everything but the COMMIT line, as a full disk would leave it.
+  render_docker_user() { printf '*filter\n:DOCKER-USER - [0:0]\n-A DOCKER-USER -i %s -j DROP\n' "$1"; }
+  run firewall_apply "$BATS_TEST_TMPDIR/cand"
+  [ "$status" -ne 0 ]
+  [ "$(boot_state)" = "$before" ]
+  # A COMMIT without the DROP line is not whole either.
+  render_docker_user() { printf '*filter\n:DOCKER-USER - [0:0]\n-A DOCKER-USER -j RETURN\nCOMMIT\n'; }
+  run firewall_apply "$BATS_TEST_TMPDIR/cand"
+  [ "$status" -ne 0 ]
+  [ "$(boot_state)" = "$before" ]
+}
+
+@test "an nft render cut before its last line leaves boot files and open-ports alone" {
+  local before
+  apply_once_and_open_5432
+  before="$(boot_state)"
+  printf '5432/tcp\n6000/tcp\n' >"$BATS_TEST_TMPDIR/cand"
+  eval "real_$(declare -f render_nft)"
+  render_nft() { real_render_nft "$@" | head -n -1; }
+  run firewall_apply "$BATS_TEST_TMPDIR/cand"
+  [ "$status" -ne 0 ]
+  [ "$(boot_state)" = "$before" ]
+}
+
+@test "a failed mktemp for the stage dir changes nothing and loads nothing" {
+  local before
+  apply_once_and_open_5432
+  before="$(boot_state)"
+  : >"$FWLOG"
+  mktemp() { return 1; }
+  run firewall_apply
+  [ "$status" -ne 0 ]
+  [ "$(boot_state)" = "$before" ]
+  [ ! -s "$FWLOG" ]
+}
+
 @test "a missing DOCKER-USER jump in FORWARD logs a warning and does not fail" {
   touch "$BATS_TEST_TMPDIR/fail_iptables_C" "$BATS_TEST_TMPDIR/fail_ip6tables_C"
   run firewall_apply
