@@ -416,3 +416,22 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   [ "$status" -eq 2 ]
   [ ! -e "$VPS_APPS_ROOT$STATE/.admin-password" ]
 }
+
+@test "after a recipe env with an empty VA_IP, rc works from install.sh's app.env and the bootstrap still parses its env" {
+  install_recipe
+  sed -i 's/^VA_IP=.*/VA_IP=/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  cp "$VPS_APPS_ROOT/etc/vps-apps/env" "$BATS_TEST_TMPDIR/env.before"
+  printf 'ID=ubuntu\nVERSION_ID="24.04"\n' >"$VPS_APPS_ROOT/etc/os-release"
+  # The real install.sh as the bootstrap runs it, with the IP the bootstrap detected in memory. The
+  # first step is stubbed to fail, so nothing else runs.
+  run bash -c '. "$1"; load_code() { base_packages() { return 1; }; }; main --app docker --host h1.example.com --ip 85.121.120.207 --password-file "$2"' \
+    _ "$BATS_TEST_DIRNAME/../install.sh" "$VPS_APPS_ROOT$pw_file"
+  [ "$status" -eq 1 ]
+  cmp "$VPS_APPS_ROOT/etc/vps-apps/env" "$BATS_TEST_TMPDIR/env.before"
+  run "$BATS_TEST_DIRNAME/../bin/rc" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Host:   https://h1.example.com"* ]]
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- "--ip 85.121.120.207 " "$STUB_TMP/install.log"
+}

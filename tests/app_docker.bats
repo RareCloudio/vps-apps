@@ -13,9 +13,10 @@ setup() {
   DRIVER="$BATS_TEST_TMPDIR/driver.sh"
   # The driver sources install.sh, replaces load_code with stubs that log their name, and runs main.
   # EXTRA is extra shell code that runs after the stubs (to make one of them fail, for example).
+  # INSTALL_SH names another copy of install.sh to source (default: this checkout).
   cat >"$DRIVER" <<DRV
 set -euo pipefail
-. "$ROOT_DIR/install.sh"
+. "\${INSTALL_SH:-$ROOT_DIR/install.sh}"
 load_code() {
   local f
   for f in packages swap sysctl docker firewall proxy ssh motd; do
@@ -159,6 +160,57 @@ seen_pw_is() {
   [ "$status" -eq 1 ]
   [ "$(cat "$BATS_TEST_TMPDIR/copy_seen")" = present ]
   [ ! -e "$VPS_APPS_ROOT/var/lib/vps-apps/.admin-password" ]
+}
+
+# code_copy <dir>: this checkout's code, laid out as the tarball puts it.
+code_copy() {
+  mkdir -p "$1"
+  cp -r "$ROOT_DIR/install.sh" "$ROOT_DIR/lib" "$ROOT_DIR/base" "$ROOT_DIR/apps" "$ROOT_DIR/bin" "$1/"
+}
+
+@test "install.sh records app.env from its arguments and leaves the bootstrap's env file alone" {
+  local etc="$VPS_APPS_ROOT/etc/vps-apps"
+  mkdir -p "$etc"
+  printf 'APP=docker\nMODE=\nVERSION=0123456789abcdef0123456789abcdef01234567\nVA_IP=\nVA_HOST=a.example.com\n' >"$etc/env"
+  cp "$etc/env" "$BATS_TEST_TMPDIR/env.before"
+  run_driver
+  [ "$status" -eq 0 ]
+  cmp "$etc/env" "$BATS_TEST_TMPDIR/env.before"
+  [ "$(cat "$etc/app.env")" = "$(printf 'APP=docker\nMODE=\nVA_HOST=a.example.com\nVA_IP=1.2.3.4')" ]
+  [ "$(stat -c %a "$etc/app.env")" = 644 ]
+}
+
+@test "a manual run, without the recipe, leaves a working rc" {
+  local src="$BATS_TEST_TMPDIR/src/vps-apps-x"
+  code_copy "$src"
+  run_driver INSTALL_SH="$src/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$VPS_APPS_ROOT/opt/vps-apps/current")" = "$(cd "$src" && pwd -P)" ]
+  run "$VPS_APPS_ROOT/opt/vps-apps/current/bin/rc" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Status: ready"* ]]
+  [[ "$output" == *"Host:   https://a.example.com"* ]]
+}
+
+@test "a run of another code dir moves the current link to that dir" {
+  local opt="$VPS_APPS_ROOT/opt/vps-apps"
+  code_copy "$opt/1111111111111111111111111111111111111111"
+  code_copy "$opt/2222222222222222222222222222222222222222"
+  ln -s "$opt/1111111111111111111111111111111111111111" "$opt/current"
+  run_driver INSTALL_SH="$opt/2222222222222222222222222222222222222222/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$opt/current")" = "$(cd "$opt/2222222222222222222222222222222222222222" && pwd -P)" ]
+}
+
+@test "a run through the current link leaves the link alone: it never points at itself" {
+  local opt="$VPS_APPS_ROOT/opt/vps-apps" code
+  code="$VPS_APPS_ROOT/opt/vps-apps/0123456789abcdef0123456789abcdef01234567"
+  code_copy "$code"
+  ln -s "$code" "$opt/current"
+  run_driver INSTALL_SH="$opt/current/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$opt/current")" = "$code" ]
+  readlink -e "$opt/current/install.sh"
 }
 
 @test "a library that fails to load exits 1 (retryable), not 2" {

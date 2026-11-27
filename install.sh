@@ -83,6 +83,31 @@ parse_args() {
   fi
 }
 
+# record_install: what rc and the login message read later, from the validated arguments.
+#   - /etc/vps-apps/app.env holds the settings (no secrets, mode 0644, replaced atomically). The
+#     bootstrap's /etc/vps-apps/env is never written: its strict parser refuses any other shape.
+#   - /opt/vps-apps/current points at this code. It is changed only when it does not lead here
+#     already, and the target is the physical directory, so a run through the link itself never
+#     makes the link point at itself. Anything there that is not a symlink is left alone.
+record_install() {
+  local etc code current
+  etc="$(p /etc/vps-apps)"
+  mkdir -p "$etc"
+  printf 'APP=%s\nMODE=%s\nVA_HOST=%s\nVA_IP=%s\n' "$VA_APP" "$VA_MODE" "$VA_HOST" "$VA_IP" |
+    write_atomic "$etc/app.env" 0644
+  code="$(cd "$VA_ROOT" && pwd -P)"
+  current="$(p /opt/vps-apps/current)"
+  if [ "$(cd "$current" 2>/dev/null && pwd -P)" = "$code" ]; then
+    return 0
+  fi
+  if [ -e "$current" ] && [ ! -L "$current" ]; then
+    log "install.sh: $current is not a symlink, left as it is"
+    return 0
+  fi
+  mkdir -p "$(dirname "$current")"
+  ln -sfn "$code" "$current"
+}
+
 # prepare_password: the password as the apps read it, in a copy without the one trailing newline an
 # editor or `echo` adds, mode 0600 in the state dir. VA_PASSWORD_FILE then names the copy. It is
 # shredded when install.sh exits, and by the bootstrap when it finishes (in case install.sh was
@@ -165,6 +190,7 @@ main() {
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
+  record_install
   prepare_password
   # base_proxy and the app read these.
   export VA_HOST VA_IP

@@ -284,3 +284,33 @@ APP
   [ ! -e "$ETC/domains" ]
   [ ! -e "$STUB_TMP/hook.log" ]
 }
+
+@test "rc reads app.env before the bootstrap's env file, so an empty VA_IP there does no harm" {
+  printf 'APP=n8n\nMODE=pro\nVERSION=%s\nVA_IP=\nVA_HOST=app.example.com\n' \
+    0123456789abcdef0123456789abcdef01234567 >"$ETC/env"
+  printf 'APP=n8n\nMODE=pro\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
+  run "$RC" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Host:   https://app.example.com"* ]]
+  run "$RC" domain add shop.example.com
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Point an A record for shop.example.com to 203.0.113.7"* ]]
+}
+
+@test "rc reads app.env as data and never runs it" {
+  printf 'APP=n8n\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n$(touch %s/pwned)\n' "$BATS_TEST_TMPDIR" >"$ETC/app.env"
+  run "$RC" status
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
+@test "the motd reads the host from app.env, and from the bootstrap's env file without it" {
+  rm "$ETC/env"
+  printf 'APP=n8n\nMODE=\nVA_HOST=other.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
+  run "$MOTD_SRC"
+  [[ "$output" == *"Open: https://other.example.com"* ]]
+  rm "$ETC/app.env"
+  printf 'APP=n8n\nVA_HOST=app.example.com\n' >"$ETC/env"
+  run "$MOTD_SRC"
+  [[ "$output" == *"Open: https://app.example.com"* ]]
+}
