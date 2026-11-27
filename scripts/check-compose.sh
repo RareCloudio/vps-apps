@@ -34,7 +34,7 @@ check $n8n/compose.yml $n8n/compose.pro.yml $n8n/compose.expose.yml
 # Every compose file in the repo must be part of at least one combination above, so a new overlay
 # cannot ship unvalidated.
 missing=0
-for f in apps/*/compose*.yml base/proxy/compose.yml; do
+for f in apps/*/compose*.y*ml base/*/compose*.y*ml; do
   if [[ "$checked" != *" $f "* ]]; then
     echo "check-compose: $f is in no checked combination" >&2
     missing=1

@@ -330,7 +330,7 @@ merged_config() {
 @test "a failed start in app_expose takes the stack down, drops the marker and shows the failed page" {
   app_prepare
   stub_curl
-  docker() { printf '%s\n' "$*" >>"$STUB_TMP/docker_calls"; return 1; }
+  docker() { printf '%s\n' "$*" >>"$STUB_TMP/docker_calls"; [[ "$*" != *compose.expose.yml*" up"* ]]; }
   run app_expose
   [ "$status" -ne 0 ]
   grep -q ' down' "$STUB_TMP/docker_calls"
@@ -414,7 +414,7 @@ merged_config() {
   [ "$status" -ne 0 ]
   [ ! -e "$DATA/exposed" ]
   [ ! -e "$(p /var/lib/vps-apps/site-mode)" ]
-  [ ! -s "$STUB_TMP/docker.log" ]
+  refute_grep -q compose.expose.yml "$STUB_TMP/docker.log"
 }
 
 @test "app_expose refuses when the settings answer cannot be read" {
@@ -461,10 +461,6 @@ merged_config() {
   [ "$(grep -c 'rest/owner/setup' "$CURL_ARGV")" -eq 2 ]
 }
 
-@test "the template substitution is literal even for an ampersand in a value" {
-  grep -qF '"${vars[$key]}"' "$APP_DIR/app.sh"
-}
-
 @test "the MOTD shows only the fallback hint, not 'use the password you set', when the credentials file exists" {
   motd="$ROOT_DIR/base/files/99-vps-apps-motd"
   run "$motd"
@@ -486,4 +482,72 @@ merged_config() {
   run bash "$copy/scripts/check-compose.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"compose.extra.yml"* ]]
+}
+
+@test "the template substitution is literal for a value with an ampersand and a backslash" {
+  resolve_image_digest() { printf '%s\n' 'x/y&z\w@sha256:abc'; }
+  app_prepare
+  grep -qxF 'N8N_IMAGE=x/y&z\w@sha256:abc' "$DATA/.env"
+  grep -qxF 'POSTGRES_IMAGE=x/y&z\w@sha256:abc' "$DATA/.env"
+}
+
+@test "app_expose brings the setup stack up and waits for n8n before it checks the settings" {
+  app_prepare
+  stub_curl
+  : >"$DATA/exposed"
+  : >"$STUB_TMP/docker.log"
+  app_expose
+  setup_line="$(grep -n "compose.setup.yml.* up -d" "$STUB_TMP/docker.log" | head -n1 | cut -d: -f1)"
+  expose_line="$(grep -n "compose.expose.yml.* up -d" "$STUB_TMP/docker.log" | head -n1 | cut -d: -f1)"
+  [ -n "$setup_line" ] && [ -n "$expose_line" ] && [ "$setup_line" -lt "$expose_line" ]
+  # readiness was probed before the settings were read
+  [ "$(grep -n 'healthz/readiness' "$CURL_ARGV" | head -n1 | cut -d: -f1)" -lt "$(grep -n 'rest/settings' "$CURL_ARGV" | head -n1 | cut -d: -f1)" ]
+}
+
+@test "a failed expose followed by a retry recovers, and the retry still refuses while setup is offered" {
+  app_prepare
+  stub_curl
+  docker() {
+    printf '%s\n' "$*" >>"$STUB_TMP/docker.log"
+    if [[ "$*" == *compose.expose.yml*" up"* ]] && [ ! -e "$BATS_TEST_TMPDIR/expose_failed_once" ]; then
+      : >"$BATS_TEST_TMPDIR/expose_failed_once"
+      return 1
+    fi
+    return 0
+  }
+  run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+  [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = failed ]
+  : >"$STUB_TMP/docker.log"
+  SETTINGS_BODY="$SETTINGS_SETUP" run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+  grep -q "compose.setup.yml.* up -d" "$STUB_TMP/docker.log"
+  run app_expose
+  [ "$status" -eq 0 ]
+  [ -f "$DATA/exposed" ]
+  [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = app ]
+}
+
+@test "app_expose fails without exposing when n8n never becomes ready after the setup stack is up" {
+  app_prepare
+  stub_curl
+  echo 999 >"$BATS_TEST_TMPDIR/ready_fail"
+  run app_expose
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA/exposed" ]
+  refute_grep -q compose.expose.yml "$STUB_TMP/docker.log"
+}
+
+@test "check-compose.sh also catches an uncombined .yaml file under base/" {
+  copy="$BATS_TEST_TMPDIR/copy2"
+  mkdir -p "$copy/base/other"
+  cp -r "$ROOT_DIR/scripts" "$ROOT_DIR/apps" "$ROOT_DIR/base" "$copy/"
+  printf 'services: {}\n' >"$copy/base/other/compose.yaml"
+  docker() { return 0; }
+  export -f docker
+  run bash "$copy/scripts/check-compose.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"base/other/compose.yaml"* ]]
 }
