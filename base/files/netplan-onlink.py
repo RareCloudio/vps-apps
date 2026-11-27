@@ -207,7 +207,7 @@ def split_lines(text):
     return lines
 
 
-def main(argv):
+def run(argv):
     if len(argv) != 3:
         sys.stderr.write("usage: netplan-onlink.py <netplan-file> <output-file>\n")
         return 1
@@ -241,6 +241,16 @@ def main(argv):
             seen.append((device, gw, keys))
             print(" ".join(w for w in (device, gw, keys) if w))
     return 0
+
+
+def main(argv):
+    """run(), with any unexpected error printed as its type alone, exit 1: an exception's message
+    can quote the netplan file (a wifi password, a key), and the caller logs this output."""
+    try:
+        return run(argv)
+    except Exception as e:  # every unexpected error ends here, as its type alone
+        sys.stderr.write("netplan-onlink: %s\n" % type(e).__name__)
+        return 1
 
 
 if __name__ == "__main__":

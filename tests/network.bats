@@ -327,6 +327,32 @@ YAML
   grep -qF "network: cannot check $VIRT, left as it is" "$LOG"
 }
 
+@test "a checker crash prints only the exception type, never its message, and exits 1" {
+  virt_file
+  # A tiny wrapper loads the checker and makes its parser raise with file content in the message.
+  cat >"$BATS_TEST_TMPDIR/crash.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("onlink", sys.argv[1])
+onlink = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(onlink)
+
+
+def boom(lines):
+    raise ValueError("      password: stub-secret")
+
+
+onlink.parse = boom
+sys.exit(onlink.main(["netplan-onlink.py"] + sys.argv[2:]))
+PY
+  run python3 -I "$BATS_TEST_TMPDIR/crash.py" "$ROOT_DIR/base/files/netplan-onlink.py" "$VIRT" \
+    "$BATS_TEST_TMPDIR/out"
+  [ "$status" -eq 1 ]
+  [ "$output" = "netplan-onlink: ValueError" ]
+  [ ! -e "$BATS_TEST_TMPDIR/out" ]
+}
+
 @test "a backup that cannot be made leaves the file alone, says so, and the step still succeeds" {
   virt_file
   keep_copies "$VIRT"
