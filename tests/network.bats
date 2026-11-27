@@ -289,6 +289,63 @@ YAML
   grep -q 'network: the netplan files need no change' "$LOG"
 }
 
+@test "a file with CRLF line ends keeps them, and the new line ends with CRLF too" {
+  virt_file
+  sed '15a\          on-link: true' "$VIRT" | sed 's/$/\r/' >"$BATS_TEST_TMPDIR/want"
+  sed -i 's/$/\r/' "$VIRT"
+  network_step
+  [ "$status" -eq 0 ]
+  cmp "$BATS_TEST_TMPDIR/want" "$VIRT"
+  [ "$(grep -c $'\r$' "$VIRT")" -eq 18 ]
+}
+
+@test "a parser that fails leaves the file alone, says so, and the step still succeeds" {
+  virt_file
+  keep_copies "$VIRT"
+  rm "$BIN/python3"
+  printf '#!/bin/sh\necho "Traceback (most recent call last): stub" >&2\nexit 1\n' >"$BIN/python3"
+  chmod +x "$BIN/python3"
+  network_step
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  [ ! -e "$BACKUP" ]
+  [ ! -e "$STUB_TMP/netplan.log" ]
+  [ ! -e "$STUB_TMP/ip.log" ]
+  grep -qF "network: cannot check $VIRT, left as it is" "$LOG"
+}
+
+@test "a backup that cannot be made leaves the file alone, says so, and the step still succeeds" {
+  virt_file
+  keep_copies "$VIRT"
+  mkdir -p "$VPS_APPS_ROOT/var/lib/vps-apps"
+  : >"$VPS_APPS_ROOT/var/lib/vps-apps/backup"
+  network_step
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  [ ! -e "$STUB_TMP/ip.log" ]
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 1 ]
+  grep -qF "network: cannot keep a copy of $VIRT, left as it is" "$LOG"
+}
+
+@test "a file that cannot be written is left alone, says so, and the step still succeeds" {
+  virt_file
+  keep_copies "$VIRT"
+  local real
+  real="$(command -v mktemp)"
+  rm "$BIN/mktemp"
+  # mktemp refuses only in /etc/netplan, where write_atomic makes its temp file.
+  printf '#!/bin/sh\ncase "$*" in */etc/netplan/*) echo "mktemp: stub refuses" >&2; exit 1 ;; esac\nexec %s "$@"\n' \
+    "$real" >"$BIN/mktemp"
+  chmod +x "$BIN/mktemp"
+  network_step
+  [ "$status" -eq 0 ]
+  untouched "$VIRT"
+  [ ! -e "$STUB_TMP/ip.log" ]
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 1 ]
+  grep -qF "network: cannot write $VIRT, left as it is" "$LOG"
+  [ -z "$(find "$NETPLAN" -name '.*' -type f)" ]
+}
+
 @test "a netplan file that is a symlink is left alone, and so is its target" {
   mkdir -p "$VPS_APPS_ROOT/etc/netplan-real"
   virt_file
