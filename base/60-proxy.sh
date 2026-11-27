@@ -77,7 +77,9 @@ base_proxy() {
   caddy_image="$(resolve_image_digest "$VA_CADDY_IMAGE_REF")" || return 1
   socket_image="$(resolve_image_digest "$VA_SOCKET_PROXY_IMAGE_REF")" || return 1
   write_atomic "$data/compose.yml" 0644 <"$VA_BASE_DIR/proxy/compose.yml"
-  printf 'CADDY_IMAGE=%s\nSOCKET_PROXY_IMAGE=%s\n' "$caddy_image" "$socket_image" | write_atomic "$data/.env" 0644
+  # The REF lines let rc update re-resolve the digests (convention in lib/images.sh).
+  printf 'CADDY_IMAGE=%s\nCADDY_IMAGE_REF=%s\nSOCKET_PROXY_IMAGE=%s\nSOCKET_PROXY_IMAGE_REF=%s\n' \
+    "$caddy_image" "$VA_CADDY_IMAGE_REF" "$socket_image" "$VA_SOCKET_PROXY_IMAGE_REF" | write_atomic "$data/.env" 0644
 
   write_atomic "$pub/installing.html" 0644 <"$VA_BASE_DIR/www/installing.html"
   write_atomic "$pub/failed.html" 0644 <"$VA_BASE_DIR/www/failed.html"

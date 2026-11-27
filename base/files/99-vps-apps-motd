@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Login message of a vps-apps server, run by pam_motd as /etc/update-motd.d/99-vps-apps.
+# It reads the host from the env file (as data) and the install status, nothing else.
+R="${VPS_APPS_ROOT:-}"
+
+host=""
+env_file="$R/etc/vps-apps/env"
+if [ -r "$env_file" ]; then
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    if [ "$key" = VA_HOST ]; then
+      host="$value"
+    fi
+  done <"$env_file"
+fi
+[[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || host=""
+
+status=""
+status_file="$R/var/lib/vps-apps/public/.well-known/rarecloud-app-status"
+if [ -r "$status_file" ]; then
+  status="$(head -c 64 "$status_file" 2>/dev/null || true)"
+fi
+case "$status" in
+  installing | ready) ;;
+  failed:[a-z0-9_-]*) [[ "$status" =~ ^failed:[a-z0-9_-]+$ ]] || status="" ;;
+  *) status="" ;;
+esac
+[ -n "$status" ] || status="unknown"
+
+echo
+echo "RareCloud app server"
+if [ -n "$host" ]; then
+  echo "  Open: https://$host"
+fi
+echo "  Status: $status"
+echo "  Login: use the password you set when you ordered this server. 'rc status' shows the details."
+echo

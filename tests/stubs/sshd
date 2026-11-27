@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Test stub: logs argv (also into the shared calls.log, to check ordering against systemctl).
+# Exits with the code in STUB_TMP/sshd_rc when that file exists.
+printf '%s\n' "$*" >>"${STUB_TMP:?}/sshd.log"
+printf 'sshd %s\n' "$*" >>"$STUB_TMP/calls.log"
+if [ -f "$STUB_TMP/sshd_rc" ]; then exit "$(cat "$STUB_TMP/sshd_rc")"; fi
+exit 0

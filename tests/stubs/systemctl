@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
-# Test stub: logs argv, one call per line.
+# Test stub: logs argv, one call per line (also into the shared calls.log).
 printf '%s\n' "$*" >>"${STUB_TMP:?}/systemctl.log"
+printf 'systemctl %s\n' "$*" >>"$STUB_TMP/calls.log"

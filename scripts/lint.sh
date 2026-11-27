@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(
-  find . -type f \( -name '*.sh' -o -path './bin/*' -o -path './recipe/*.tmpl' -o -path './tests/stubs/*' \) \
+  find . -type f \( -name '*.sh' -o -path './bin/*' -o -path './base/files/*-motd' -o -path './recipe/*.tmpl' -o -path './tests/stubs/*' \) \
     -not -name '.gitkeep' -not -path './.git/*' -not -path './.superpowers/*' | sort
 )
 if [ "${#files[@]}" -eq 0 ]; then

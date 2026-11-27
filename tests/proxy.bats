@@ -105,6 +105,8 @@ setup() {
   env="$(p /opt/vps-apps-data/proxy/.env)"
   grep -qE '^CADDY_IMAGE=lucaslorentz/caddy-docker-proxy@sha256:[0-9a-f]{64}$' "$env"
   grep -qE '^SOCKET_PROXY_IMAGE=tecnativa/docker-socket-proxy@sha256:[0-9a-f]{64}$' "$env"
+  grep -qxF "CADDY_IMAGE_REF=$VA_CADDY_IMAGE_REF" "$env"
+  grep -qxF "SOCKET_PROXY_IMAGE_REF=$VA_SOCKET_PROXY_IMAGE_REF" "$env"
   [ -f "$(p /opt/vps-apps-data/proxy/compose.yml)" ]
   grep -qF "compose -f $(p /opt/vps-apps-data/proxy)/compose.yml --env-file $env up -d" "$STUB_TMP/docker.log"
 }
