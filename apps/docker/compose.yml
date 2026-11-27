@@ -1,0 +1,17 @@
+# The Docker VPS landing page: a static file server on the proxy network. The image comes from the
+# .env under /opt/vps-apps-data/docker (digest pinned); the default only keeps the file valid alone.
+name: vps-apps-docker
+
+services:
+  landing:
+    image: ${LANDING_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    command: ["caddy", "file-server", "--root", "/srv", "--listen", ":3000"]
+    volumes:
+      - /opt/vps-apps-data/docker/www:/srv:ro
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
