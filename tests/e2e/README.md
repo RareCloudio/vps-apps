@@ -81,3 +81,8 @@ tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app docker --version $V --passwo
 
 | date | commit | app/mode | where tested | result |
 |------|--------|----------|--------------|--------|
+| 2026-11-27 | 0fdfd61 | docker, n8n starter | 2 x VPS on fra1 (Virtualizor, 2 GB) | first live runs: docker 8/11, n8n starter 9/11; found the proxy readiness bug (fixed in efba2c7) and script defects (fixed in 463f968); IPv6 untestable (node template has no on-link route) |
+| 2026-11-27 | 8c764df | docker | VPS on thg1, 2 GB, probe host on thg1 | 11/11 (check 5 re-run alone after the probe host's own reboot; IPv4 and IPv6 probed, IPv6 route added by hand on both VPS because the node template lacks on-link) |
+| 2026-11-27 | 8c764df | n8n starter | VPS on thg1, 4 GB | 11/11 |
+| 2026-11-27 | 8c764df | n8n pro | VPS on thg1, 8 GB | 11/11 |
+| 2026-11-27 | 8c764df | docker, resume (checks 6, 3, 9) | VPS on thg1, 2 GB | 3/3 |
