@@ -451,3 +451,50 @@ apply_once_and_open_5432() {
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf '22/tcp\n80/tcp\n443/tcp\n5432/tcp')" ]
 }
+
+# ssh_on_2222: sshd -T reports port 2222 (Port 2222 in sshd_config) and nothing on 22.
+ssh_on_2222() {
+  printf 'port 2222\nlistenaddress [::]:2222\nlistenaddress 0.0.0.0:2222\n' >"$BATS_TEST_TMPDIR/sshd_T_set"
+}
+
+@test "the host accepts every port sshd listens on, and 22 always" {
+  ssh_on_2222
+  render_nft "$PORTS" >"$BATS_TEST_TMPDIR/f.nft"
+  grep -qxF '    tcp dport { 22, 80, 443 } accept' "$BATS_TEST_TMPDIR/f.nft"
+  grep -qxF '    tcp dport 2222 accept' "$BATS_TEST_TMPDIR/f.nft"
+  run grep -c '@' "$BATS_TEST_TMPDIR/f.nft"
+  [ "$output" = 0 ]
+}
+
+@test "a port given only on a ListenAddress is accepted too" {
+  printf 'listenaddress 0.0.0.0:2200\n' >"$BATS_TEST_TMPDIR/sshd_T_set"
+  run fw_ssh_ports
+  [ "$output" = "$(printf '22\n2200')" ]
+}
+
+@test "when sshd -T fails only 22 is taken as the SSH port" {
+  echo 255 >"$BATS_TEST_TMPDIR/sshd_T_rc"
+  run fw_ssh_ports
+  [ "$status" -eq 0 ]
+  [ "$output" = 22 ]
+  render_nft "$PORTS" >"$BATS_TEST_TMPDIR/f.nft"
+  run grep -c 'dport' "$BATS_TEST_TMPDIR/f.nft"
+  [ "$output" = 2 ]
+}
+
+@test "rc port close refuses every SSH port, rc port open calls it always open, rc port list shows it" {
+  ssh_on_2222
+  run "$RC" port close 2222
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"2222/tcp carries SSH, SSH stays open"* ]]
+  run "$RC" port close 22
+  [ "$status" -eq 2 ]
+  : >"$FWLOG"
+  run "$RC" port open 2222
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"always open"* ]]
+  [ ! -s "$PORTS" ]
+  [ ! -s "$FWLOG" ]
+  run "$RC" port list
+  [ "$output" = "$(printf '22/tcp\n2222/tcp\n80/tcp\n443/tcp')" ]
+}
