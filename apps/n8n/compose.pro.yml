@@ -1,16 +1,30 @@
 # Pro mode: n8n in queue mode with Valkey and two workers. Added after compose.yml.
+# Valkey requires the secret VALKEY_PASSWORD from the .env (generated on the server once). It gets it
+# in its environment and reads it as config on stdin, so the value is on no command line.
 x-queue-env: &queue-env
   EXECUTIONS_MODE: queue
   QUEUE_BULL_REDIS_HOST: valkey
+  QUEUE_BULL_REDIS_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is not set (rc update adds it)}
 
 services:
   valkey:
     image: ${VALKEY_IMAGE:-valkey/valkey:8-alpine}
     restart: unless-stopped
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is not set (rc update adds it)}
+    # Through the image's entrypoint (it drops root) to "valkey-server -", which reads its config
+    # from stdin; the container's shell fills in the value.
+    command:
+      - sh
+      - -c
+      - |
+        exec docker-entrypoint.sh valkey-server - <<EOF
+        requirepass $${VALKEY_PASSWORD:?}
+        EOF
     volumes:
       - valkey_data:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${VALKEY_PASSWORD}\" valkey-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 20
