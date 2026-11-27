@@ -1,0 +1,62 @@
+# GitLab Runner with the Docker executor, and its registration page. The image digests and the
+# page's user come from the .env under /opt/vps-apps-data/glrunner (compose reads it through
+# --env-file); the image defaults only keep the file valid on its own. compose.expose.yml adds the
+# proxy labels and the login to the page.
+name: vps-apps-glrunner
+
+services:
+  # The official image, as GitLab runs it in a container (https://docs.gitlab.com/runner/install/docker/):
+  # its config.toml in a named volume, and the host's Docker socket, through which the Docker
+  # executor starts every job in containers of its own. No port: the runner polls GitLab over
+  # HTTPS. It starts unregistered; the register unit writes config.toml, which the runner reloads.
+  gitlab-runner:
+    image: ${GITLAB_RUNNER_IMAGE:-gitlab/gitlab-runner:alpine}
+    restart: unless-stopped
+    volumes:
+      - gitlab_runner_config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # The registration page (apps/_runner-common/page.py), as in apps/ghrunner/compose.yml: the host's
+  # unprivileged user vps-apps-page, a read-only root filesystem, no capabilities and no Docker
+  # socket. Its only writable path is the inbox on the host's /run; the status is mounted read-only.
+  page:
+    image: ${PAGE_IMAGE:-python:3.14-alpine}
+    restart: unless-stopped
+    user: "${PAGE_UID:?PAGE_UID is not set}:${PAGE_GID:?PAGE_GID is not set}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 32
+    environment:
+      RUNNER_KIND: gitlab
+    # -I: isolated mode, no PYTHON* variables, no user site, no script directory on sys.path.
+    command: ["python3", "-I", "/app/page.py"]
+    volumes:
+      - type: bind
+        source: ../_runner-common/page.py
+        target: /app/page.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/vps-apps-glrunner/inbox
+        target: /inbox
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/vps-apps-data/glrunner/status
+        target: /status
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python3", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  gitlab_runner_config:
