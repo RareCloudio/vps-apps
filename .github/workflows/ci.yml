@@ -33,6 +33,9 @@ jobs:
             docker compose -f "$f" config -q
           done
 
+      - name: Parse the base Caddyfile in every site mode
+        run: scripts/check-caddyfile.sh
+
       - name: gitleaks
         env:
           GITLEAKS_VERSION: 8.30.1

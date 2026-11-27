@@ -5,7 +5,8 @@
 	email abuse@rarecloud.io
 }
 
-# The install status, served by IP over plain HTTP with any Host header.
+# The install status, served over plain HTTP for requests that carry the IP as the Host header.
+# A request with the site name as Host is sent to HTTPS by automatic HTTPS.
 :80 {
 	handle /.well-known/rarecloud-app-status {
 		root * /srv/public

@@ -95,3 +95,22 @@ current_status() { cat "$(p /var/lib/vps-apps/public/.well-known/rarecloud-app-s
   log hello world
   grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z hello world$' "$(p /var/log/vps-apps-install.log)"
 }
+
+@test "write_atomic stores stdin with the mode and leaves no temp file" {
+  mkdir -p "$BATS_TEST_TMPDIR/d"
+  printf 'hello\n' | write_atomic "$BATS_TEST_TMPDIR/d/f" 0640
+  [ "$(cat "$BATS_TEST_TMPDIR/d/f")" = hello ]
+  [ "$(stat -c %a "$BATS_TEST_TMPDIR/d/f")" = 640 ]
+  [ "$(find "$BATS_TEST_TMPDIR/d" -type f | wc -l)" -eq 1 ]
+}
+
+@test "write_atomic replaces the old content whole and cleans up when it fails" {
+  mkdir -p "$BATS_TEST_TMPDIR/d"
+  printf 'old' >"$BATS_TEST_TMPDIR/d/f"
+  run bash -c '. "$1"; printf new | write_atomic "$2" zzz' _ "$BATS_TEST_DIRNAME/../lib/common.sh" "$BATS_TEST_TMPDIR/d/f"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/d/f")" = old ]
+  [ "$(find "$BATS_TEST_TMPDIR/d" -type f | wc -l)" -eq 1 ]
+  printf 'new' | write_atomic "$BATS_TEST_TMPDIR/d/f" 0644
+  [ "$(cat "$BATS_TEST_TMPDIR/d/f")" = new ]
+}

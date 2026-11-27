@@ -27,10 +27,6 @@ bootstrap() { bash "$VPS_APPS_ROOT/usr/local/sbin/vps-apps-bootstrap"; }
 status_now() { cat "$VPS_APPS_ROOT$STATUS"; }
 pw_file="/etc/vps-apps/password"
 
-# refute_grep <grep args>: fails the test when grep finds a match (a bare ! is ignored by bats mid-test).
-refute_grep() {
-  if grep "$@"; then return 1; fi
-}
 
 install_recipe() {
   run_recipe 'Secret9A' --app docker
