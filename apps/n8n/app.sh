@@ -61,11 +61,6 @@ app_site_addrs() {
   printf '%s' "$addrs"
 }
 
-# app_url_vars: the three URL variables. The primary URL is always the server's own name.
-app_url_vars() {
-  printf 'WEBHOOK_URL=https://%s/\nN8N_EDITOR_BASE_URL=https://%s\nN8N_HOST=%s\n' "$VA_HOST" "$VA_HOST" "$VA_HOST"
-}
-
 # app_prepare: the mode, then the .env, created once. An existing .env is kept as it is, so every
 # secret stays byte-identical on a re-run. Every image is resolved before anything is written.
 app_prepare() {
@@ -263,19 +258,24 @@ app_ready_check() {
   grep -q '"status":"ok"' <<<"$body"
 }
 
-# app_domain_added <domain>: rewrite the address list and the three URL variables from the host and
-# /etc/vps-apps/domains, then recreate n8n. The primary URL stays the server's own name.
+# app_domain_added <domain>: rewrite the address list from the host and /etc/vps-apps/domains, so
+# every name stays served, and move the three URL variables (webhook URLs, editor links, N8N_HOST)
+# to the domain just added, the newest one. Then recreate n8n. An invalid name leaves the URL
+# variables on the server's own name.
 app_domain_added() {
-  local env_file line key out="" site_addrs
+  local env_file line key out="" site_addrs url_host="$VA_HOST"
   env_file="$(app_data_dir)/.env"
   site_addrs="$(app_site_addrs)"
+  if valid_hostname "${1:-}"; then
+    url_host="$1"
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     key="${line%%=*}"
     case "$key" in
       VA_SITE_ADDRS) line="VA_SITE_ADDRS=\"$site_addrs\"" ;;
-      WEBHOOK_URL) line="WEBHOOK_URL=https://$VA_HOST/" ;;
-      N8N_EDITOR_BASE_URL) line="N8N_EDITOR_BASE_URL=https://$VA_HOST" ;;
-      N8N_HOST) line="N8N_HOST=$VA_HOST" ;;
+      WEBHOOK_URL) line="WEBHOOK_URL=https://$url_host/" ;;
+      N8N_EDITOR_BASE_URL) line="N8N_EDITOR_BASE_URL=https://$url_host" ;;
+      N8N_HOST) line="N8N_HOST=$url_host" ;;
     esac
     out+="$line"$'\n'
   done <"$env_file"
