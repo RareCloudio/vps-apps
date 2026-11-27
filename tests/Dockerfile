@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bats shellcheck jq git ca-certificates curl openssh-client \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bats shellcheck jq git ca-certificates curl openssh-client python3-minimal \
  && rm -rf /var/lib/apt/lists/*
 COPY . /src
 WORKDIR /src

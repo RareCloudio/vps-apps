@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# The first base step, before packages: an IPv6 default route that works. Sourced after
+# lib/common.sh, never executed.
+#
+# A KVM VPS from the Virtualizor panel gets a netplan file whose IPv6 gateway lies outside the VPS's
+# own /64, on a route without on-link: true. systemd-networkd then never installs the IPv6 default
+# route: IPv6 does not work at all, and every boot waits two minutes for the network to come online.
+# This step adds the flag to such routes (files/netplan-onlink.py decides which, with Python's
+# ipaddress; netplan's own command is Python, so python3 is there wherever netplan is) and adds the
+# same route to the running system. It never fails the install: what goes wrong is logged, and a
+# netplan file is either fixed and validated or left exactly as it was.
+
+VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The address the closing check pings, for the install log only (Cloudflare's resolver).
+VA_PING6_TARGET=2606:4700:4700::1111
+
+# net_generate: netplan generate, which checks every netplan file and writes the backend files
+# without touching the running network. Under a test root it reads the files there.
+net_generate() {
+  if [ -n "${VPS_APPS_ROOT:-}" ]; then
+    netplan generate --root-dir "$VPS_APPS_ROOT"
+  else
+    netplan generate
+  fi
+}
+
+# net_route <device> <gateway>: the fixed route on the running system now, without netplan apply
+# (which would reconfigure the live network in the middle of the install). Failures are logged.
+net_route() {
+  ip -6 route replace "$2" dev "$1" || log "network: ip -6 route replace $2 dev $1 failed"
+  ip -6 route replace default via "$2" dev "$1" onlink ||
+    log "network: ip -6 route replace default via $2 dev $1 onlink failed"
+}
+
+# net_fix_file <file> <work-dir>: add on-link: true where netplan-onlink.py says a route needs it.
+# The file is touched only then: the original is kept once as backup/netplan/<name>.orig (a backup
+# that exists is never replaced), the file is replaced whole with its own mode, and netplan generate
+# must accept it, or the file is put back byte for byte. Only a fix that is kept goes to net_route.
+# Sets VA_NET_CHANGED=1 when a file needed a change.
+net_fix_file() {
+  local file="$1" work="$2" name backup mode fixes out dev gw
+  name="${file##*/}"
+  backup="$(p /var/lib/vps-apps/backup/netplan)"
+  rm -f "$work/new" "$work/prev"
+  if ! fixes="$(python3 -I "$VA_BASE_DIR/files/netplan-onlink.py" "$file" "$work/new")"; then
+    log "network: cannot check $file, left as it is"
+    return 0
+  fi
+  [ -n "$fixes" ] || return 0
+  VA_NET_CHANGED=1
+  if ! { mode="$(stat -c %a "$file")" && mkdir -p "$backup" && chmod 0700 "$backup" &&
+    { [ -e "$backup/$name.orig" ] || cp -p "$file" "$backup/$name.orig"; } && cat "$file" >"$work/prev"; }; then
+    log "network: cannot keep a copy of $file, left as it is"
+    return 0
+  fi
+  if ! write_atomic "$file" "$mode" <"$work/new"; then
+    log "network: cannot write $file, left as it is"
+    return 0
+  fi
+  if ! out="$(net_generate 2>&1)"; then
+    if write_atomic "$file" "$mode" <"$work/prev"; then
+      log "network: netplan generate rejected the change to $file, the original is back: ${out//$'\n'/ }"
+    else
+      log "network: netplan generate rejected the change to $file, which could not be put back; the original is $backup/$name.orig"
+    fi
+    return 0
+  fi
+  while read -r dev gw; do
+    log "network: $file: on-link added to the IPv6 default route via $gw on $dev (original: $backup/$name.orig)"
+    net_route "$dev" "$gw"
+  done <<<"$fixes"
+}
+
+# net_fix_all: net_fix_file for every netplan file, with a private work directory in the state dir.
+net_fix_all() {
+  local state work f
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "network: python3 is missing, the netplan files are not checked"
+    return 0
+  fi
+  state="$(p /var/lib/vps-apps)"
+  if ! { mkdir -p "$state" && work="$(mktemp -d "$state/.network.XXXXXX")"; }; then
+    log "network: cannot make a work directory in $state, the netplan files are not checked"
+    return 0
+  fi
+  for f in "$(p /etc/netplan)"/*.yaml; do
+    [ -f "$f" ] || continue
+    net_fix_file "$f" "$work"
+  done
+  rm -rf "$work"
+  [ "$VA_NET_CHANGED" = 1 ] || log "network: the netplan files need no change"
+}
+
+# net_ping6: whether IPv6 answers now, for the install log only.
+net_ping6() {
+  if ping -6 -c1 -W3 "$VA_PING6_TARGET" >/dev/null 2>&1; then
+    log "network: IPv6 ping to $VA_PING6_TARGET answered"
+  else
+    log "network: IPv6 ping to $VA_PING6_TARGET got no reply"
+  fi
+}
+
+# base_network: the step. Its body runs as a condition, so errexit is off inside: every command that
+# matters checks its own result above, and nothing here can fail the install.
+base_network() {
+  VA_NET_CHANGED=0
+  { net_fix_all; net_ping6; } || true
+}
