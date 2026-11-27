@@ -76,9 +76,10 @@ nothing_done() {
   run diff "$BATS_TEST_TMPDIR/99-virt-eth0.yaml.before" "$VIRT"
   [ "$output" = "$(printf '15a16\n>           on-link: true')" ]
   [ "$(sed -n 15p "$VIRT")" = "          via: 2a06:a880:5::1" ]
-  # The original is kept, netplan generate validated the new file, and nothing called netplan apply.
+  # The original is kept; netplan generate accepted the files before the change and the new file
+  # after it; nothing called netplan apply.
   cmp "$BATS_TEST_TMPDIR/99-virt-eth0.yaml.before" "$BACKUP/99-virt-eth0.yaml.orig"
-  [ "$(cat "$STUB_TMP/netplan.log")" = "generate --root-dir $VPS_APPS_ROOT" ]
+  [ "$(cat "$STUB_TMP/netplan.log")" = "$(printf 'generate --root-dir %s\n' "$VPS_APPS_ROOT" "$VPS_APPS_ROOT")" ]
   grep -qx '          on-link: true' "$STUB_TMP/netplan.seen"
   grep -qF "network: $VIRT: on-link added to the IPv6 default route via 2a06:a880:5::1 on eth0" "$LOG"
 }
@@ -208,15 +209,31 @@ YAML
     [ "$output" = "$(printf '15a16\n>           on-link: true')" ]
     cmp "$BATS_TEST_TMPDIR/$f.before" "$BACKUP/$f.orig"
   done
-  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 2 ]
+  # One check of the files as they were, then one per changed file.
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 3 ]
   grep -qxF -- '-6 route replace default via 2a06:a880:5::1 dev eth0 onlink' "$STUB_TMP/ip.log"
   grep -qxF -- '-6 route replace default via 2a06:a880:5::1 dev eth1 onlink' "$STUB_TMP/ip.log"
+}
+
+@test "netplan that is invalid before any change: no file is changed, and the step still succeeds" {
+  virt_file
+  sed 's/eth0:/eth1:/' "$VIRT" >"$NETPLAN/99-virt-eth1.yaml"
+  keep_copies "$VIRT" "$NETPLAN/99-virt-eth1.yaml"
+  echo 1 >"$STUB_TMP/netplan_fail_calls"
+  network_step
+  [ "$status" -eq 0 ]
+  untouched "$VIRT" "$NETPLAN/99-virt-eth1.yaml"
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 1 ]
+  [ ! -e "$BACKUP" ]
+  [ ! -e "$STUB_TMP/ip.log" ]
+  grep -qF 'network: netplan generate fails before any change, so netplan is already invalid; the netplan files are left as they are: /etc/netplan/99-virt-eth0.yaml:15:10: Error in network definition: stub' "$LOG"
+  refute_grep -q stub-secret "$LOG"
 }
 
 @test "a failing netplan generate puts the original back byte for byte and the step still succeeds" {
   virt_file
   keep_copies "$VIRT"
-  echo 1 >"$STUB_TMP/netplan_rc"
+  echo 2 >"$STUB_TMP/netplan_fail_calls"
   network_step
   [ "$status" -eq 0 ]
   untouched "$VIRT"
@@ -224,13 +241,26 @@ YAML
   # generate did see the changed file; a fix it rejected is not applied to the running system either.
   grep -qx '          on-link: true' "$STUB_TMP/netplan.seen"
   [ ! -e "$STUB_TMP/ip.log" ]
-  grep -qF "network: netplan generate rejected the change to $VIRT, the original is back" "$LOG"
+  grep -qF "network: netplan generate rejected the change to $VIRT, the original is back: /etc/netplan/99-virt-eth0.yaml:15:10: Error in network definition: stub" "$LOG"
   [ -z "$(find "$NETPLAN" "$VPS_APPS_ROOT/var/lib/vps-apps" -maxdepth 1 -name '.*' -type f)" ]
+  # generate runs again on the restored files, so its output in /run matches them.
+  [ "$(grep -c '^generate' "$STUB_TMP/netplan.log")" -eq 3 ]
+  grep -qF 'network: netplan generate after the restore: ok' "$LOG"
+}
+
+@test "netplan's error is cut to its first line in the log, also when generate fails after the restore" {
+  virt_file
+  echo 2 3 >"$STUB_TMP/netplan_fail_calls"
+  network_step
+  [ "$status" -eq 0 ]
+  grep -qF 'network: netplan generate after the restore failed: /etc/netplan/99-virt-eth0.yaml:15:10: Error in network definition: stub' "$LOG"
+  [ "$(grep -c 'Error in network definition' "$LOG")" -eq 2 ]
+  refute_grep -q stub-secret "$LOG"
 }
 
 @test "run_step records the network step as done even when netplan generate fails" {
   virt_file
-  echo 1 >"$STUB_TMP/netplan_rc"
+  echo 2 >"$STUB_TMP/netplan_fail_calls"
   run env PATH="$BATS_TEST_DIRNAME/stubs:$BIN" bash -c \
     'set -euo pipefail; . "$1/lib/common.sh"; . "$1/lib/steps.sh"; . "$1/base/05-network.sh"; run_step network base_network' \
     _ "$ROOT_DIR"

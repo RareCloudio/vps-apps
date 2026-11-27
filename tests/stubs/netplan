@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Test stub: logs argv to STUB_TMP/netplan.log. "generate" appends every netplan file under
-# VPS_APPS_ROOT to STUB_TMP/netplan.seen (what it validated), then exits with the code in
-# STUB_TMP/netplan_rc when that file exists, with an error on stderr like netplan's.
+# VPS_APPS_ROOT to STUB_TMP/netplan.seen (what it validated). The generate calls whose numbers (1 is
+# the first) are listed on the one line of STUB_TMP/netplan_fail_calls fail with exit 1 and a
+# two-line error like netplan's, whose second line echoes file content (stub-secret).
 printf '%s\n' "$*" >>"${STUB_TMP:?}/netplan.log"
-if [ "${1:-}" = generate ]; then
-  cat "${VPS_APPS_ROOT:?}"/etc/netplan/*.yaml >>"$STUB_TMP/netplan.seen" 2>/dev/null || true
-fi
-if [ -f "$STUB_TMP/netplan_rc" ]; then
-  echo "netplan: stub: Error in network definition" >&2
-  exit "$(cat "$STUB_TMP/netplan_rc")"
-fi
+[ "${1:-}" = generate ] || exit 0
+cat "${VPS_APPS_ROOT:?}"/etc/netplan/*.yaml >>"$STUB_TMP/netplan.seen" 2>/dev/null || true
+n=0
+while read -r line; do
+  [ "${line%% *}" != generate ] || n=$((n + 1))
+done <"$STUB_TMP/netplan.log"
+fail=()
+[ ! -f "$STUB_TMP/netplan_fail_calls" ] || read -ra fail <"$STUB_TMP/netplan_fail_calls"
+for c in "${fail[@]}"; do
+  if [ "$c" = "$n" ]; then
+    printf '%s\n' "/etc/netplan/99-virt-eth0.yaml:15:10: Error in network definition: stub" \
+      "      password: stub-secret" >&2
+    exit 1
+  fi
+done
 exit 0
