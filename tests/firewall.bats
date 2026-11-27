@@ -166,13 +166,41 @@ COMMIT'
   grep -qxF -- '-A DOCKER-USER -i eth0 -j DROP' "$DIR/docker-user.v6"
 }
 
-@test "the IPv6 part is skipped only when ip6tables is unavailable" {
+@test "the IPv6 part is skipped when ip6tables-restore is unavailable" {
   fw_have() { [ "$1" != ip6tables-restore ]; }
   base_firewall
   grep -q '^iptables-restore -n ' "$FWLOG"
   run grep -c '^ip6tables-restore ' "$FWLOG"
   [ "$output" = 0 ]
   [ ! -e "$DIR/docker-user.v6" ]
+}
+
+@test "the IPv6 part is skipped when ip6tables cannot list its table (ipv6.disable=1)" {
+  base_firewall
+  [ -f "$DIR/docker-user.v6" ]
+  : >"$FWLOG"
+  touch "$BATS_TEST_TMPDIR/fail_ip6tables_S"
+  run firewall_apply
+  [ "$status" -eq 0 ]
+  grep -q '^iptables-restore -n ' "$FWLOG"
+  run grep -c '^ip6tables-restore ' "$FWLOG"
+  [ "$output" = 0 ]
+  [ ! -e "$DIR/docker-user.v6" ]
+}
+
+@test "fw_reload_boot_files skips the IPv6 file when ip6tables cannot list its table" {
+  base_firewall
+  [ -f "$DIR/docker-user.v6" ]
+  touch "$BATS_TEST_TMPDIR/fail_ip6tables_S"
+  : >"$FWLOG"
+  fw_reload_boot_files "$DIR"
+  grep -q '^iptables-restore -n ' "$FWLOG"
+  run grep -c '^ip6tables-restore ' "$FWLOG"
+  [ "$output" = 0 ]
+  rm "$BATS_TEST_TMPDIR/fail_ip6tables_S"
+  : >"$FWLOG"
+  fw_reload_boot_files "$DIR"
+  grep -q '^ip6tables-restore -n ' "$FWLOG"
 }
 
 @test "no IPv4 default route is a clear failure" {
