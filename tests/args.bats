@@ -35,7 +35,7 @@ setup() {
 }
 
 @test "--mode is accepted with --app n8n" {
-  run bash "$INSTALL" --app n8n --mode pro --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+  run bash -c '. "$1"; parse_args --app n8n --mode pro --host a.example.com --ip 1.2.3.4 --password-file "$2"' _ "$INSTALL" "$PWF"
   [ "$status" -eq 0 ]
 }
 
@@ -44,8 +44,8 @@ setup() {
   [ "$status" -eq 2 ]
 }
 
-@test "valid docker arguments on Ubuntu 24.04 exit 0" {
-  run bash "$INSTALL" --app docker --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+@test "valid docker arguments parse and OS check passes" {
+  run bash -c '. "$1"; parse_args --app docker --host a.example.com --ip 1.2.3.4 --password-file "$2"; require_ubuntu_2404' _ "$INSTALL" "$PWF"
   [ "$status" -eq 0 ]
 }
 

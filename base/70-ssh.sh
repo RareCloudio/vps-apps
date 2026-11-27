@@ -64,6 +64,14 @@ base_ssh() {
   dir="$(p /etc/ssh/sshd_config.d)"
   dropin="$dir/10-vps-apps.conf"
   mkdir -p "$dir"
+  # Host keys may not exist yet on a first boot, and sshd -t fails without them. -A creates only the
+  # missing ones. Under a test root the keys go under that root.
+  if [ -n "${VPS_APPS_ROOT:-}" ]; then
+    mkdir -p "$VPS_APPS_ROOT/etc/ssh"
+    ssh-keygen -A -f "$VPS_APPS_ROOT"
+  else
+    ssh-keygen -A
+  fi
   # The privilege separation directory is made by the service start; on a first boot sshd -t may
   # run before that.
   mkdir -p "$(p /run/sshd)"

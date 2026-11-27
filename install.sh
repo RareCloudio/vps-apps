@@ -74,10 +74,76 @@ parse_args() {
   fi
 }
 
+# load_code: the libraries, every base step and the chosen app. Kept in one function so a test can
+# replace it with stubs.
+load_code() {
+  local f
+  # shellcheck source=lib/apt.sh
+  . "$VA_ROOT/lib/apt.sh"
+  # shellcheck source=lib/images.sh
+  . "$VA_ROOT/lib/images.sh"
+  for f in "$VA_ROOT"/base/[0-9][0-9]-*.sh; do
+    # shellcheck source=/dev/null
+    . "$f"
+  done
+  # shellcheck source=apps/docker/app.sh
+  . "$VA_ROOT/apps/$VA_APP/app.sh"
+}
+
+# app_create_admin takes the password file; run_step calls a function without arguments.
+step_app_create_admin() {
+  app_create_admin "$VA_PASSWORD_FILE"
+}
+
+# wait_until_ready: app_ready_check retried every VA_READY_INTERVAL seconds (default 5) for
+# VA_READY_TIMEOUT seconds (default 300). It is not a step with a marker: a retry of install.sh must
+# check again. Sets failed:ready-check and returns 1 when the app never answers.
+wait_until_ready() {
+  local deadline mode=""
+  deadline=$((SECONDS + ${VA_READY_TIMEOUT:-300}))
+  set_status installing
+  until (app_ready_check); do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      log "ready check: the app does not answer on https://$VA_HOST"
+      set_status failed:ready-check
+      return 1
+    fi
+    sleep "${VA_READY_INTERVAL:-5}"
+  done
+  [ ! -r "$(p /var/lib/vps-apps/site-mode)" ] || mode="$(cat "$(p /var/lib/vps-apps/site-mode)")"
+  if [ "$mode" != app ]; then
+    log "ready check: site mode is '$mode', not app"
+    set_status failed:ready-check
+    return 1
+  fi
+}
+
 main() {
   parse_args "$@"
   require_ubuntu_2404
   log "install.sh: arguments ok (app=$VA_APP host=$VA_HOST ip=$VA_IP)"
+  # base_proxy and the app read these.
+  export VA_HOST VA_IP
+  load_code
+
+  run_step packages base_packages
+  run_step swap base_swap
+  run_step sysctl base_sysctl
+  run_step docker base_docker
+  run_step firewall base_firewall
+  run_step proxy base_proxy
+  run_step ssh base_ssh
+  run_step motd base_motd
+  run_step app_prepare app_prepare
+  run_step app_up_setup app_up_setup
+  run_step app_create_admin step_app_create_admin
+  run_step app_expose app_expose
+  wait_until_ready
+  set_status ready
+  log "install.sh: ready"
 }
 
-main "$@"
+# Run only when executed, so tests can source this file and replace load_code.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

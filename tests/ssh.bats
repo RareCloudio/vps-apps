@@ -142,3 +142,17 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
   grep -qxF 'enable fail2ban' "$STUB_TMP/systemctl.log"
   grep -qxF 'restart fail2ban' "$STUB_TMP/systemctl.log"
 }
+
+@test "base_ssh creates missing host keys before it checks the configuration" {
+  [ ! -e "$(p /etc/ssh/ssh_host_ed25519_key)" ]
+  base_ssh
+  [ -s "$(p /etc/ssh/ssh_host_ed25519_key)" ]
+  [ -s "$(p /etc/ssh/ssh_host_rsa_key)" ]
+}
+
+@test "base_ssh keeps host keys that already exist" {
+  mkdir -p "$(p /etc/ssh)"
+  printf 'existing' >"$(p /etc/ssh/ssh_host_ed25519_key)"
+  base_ssh
+  [ "$(cat "$(p /etc/ssh/ssh_host_ed25519_key)")" = existing ]
+}
