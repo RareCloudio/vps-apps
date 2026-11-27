@@ -285,3 +285,45 @@ app_domain_added() {
   printf '%s' "$out" | write_atomic "$env_file" 0600
   app_compose up -d
 }
+
+# app_update_env <env-file> <out-file>: rc update's hook (bin/rc.d/update.sh). Writes to <out-file>
+# what the app .env becomes: the keys env.tmpl gained since this server was installed
+# (n8n_fill_env), then every image re-resolved from its tag (lib/images.sh). <env-file> itself is
+# not written. Fails when a key or an image cannot be made.
+app_update_env() {
+  local filled rc=0
+  filled="$(mktemp)"
+  { n8n_fill_env "$1" >"$filled" && resolve_env_images "$filled" "$2"; } || rc=1
+  rm -f "$filled"
+  return "$rc"
+}
+
+# n8n_fill_env <env-file>: print <env-file> line by line as it is, then every key of env.tmpl it
+# lacks, so a server installed from an earlier release gets the settings added since (app_prepare
+# never rewrites an existing .env). A missing key gets its value from the template when that value
+# is a constant, and VALKEY_PASSWORD a new secret as at install. A value the install derived (the
+# database password, the encryption key, the URLs, the images) is never made up here.
+n8n_fill_env() {
+  local line valkey_pw=""
+  local -a lines=()
+  local -A have=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    lines+=("$line")
+    if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
+      have["${BASH_REMATCH[1]}"]=1
+    fi
+  done <"$1" || return 1
+  if [ -z "${have[VALKEY_PASSWORD]+x}" ]; then
+    valkey_pw="$(openssl rand -hex 32)" || return 1
+    [[ "$valkey_pw" =~ ^[0-9a-f]{64}$ ]] || return 1
+  fi
+  [ "${#lines[@]}" -eq 0 ] || printf '%s\n' "${lines[@]}"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^([A-Za-z0-9_]+)= ]] || continue
+    [ -z "${have[${BASH_REMATCH[1]}]+x}" ] || continue
+    line="${line//@VALKEY_PASSWORD@/"$valkey_pw"}"
+    if [[ ! "$line" =~ @[A-Z0-9_]+@ ]]; then
+      printf '%s\n' "$line"
+    fi
+  done <"$VA_APP_DIR/env.tmpl"
+}

@@ -718,3 +718,105 @@ urls_are() {
   VA_ADMIN_EMAIL=owner@example.org OWNER_BODY='{"data":{"email":"owner@example.org"}}' app_create_admin "$PWF"
   grep -qxF 'Email: owner@example.org' "$(p /root/vps-apps-credentials.txt)"
 }
+
+# old_env: the .env the previous release wrote (env.tmpl before the time zone, security and Valkey
+# keys), on a server with one extra domain.
+old_env() {
+  mkdir -p "$DATA"
+  cat >"$DATA/.env" <<ENV
+N8N_IMAGE=docker.n8n.io/n8nio/n8n@sha256:$(printf '1%.0s' $(seq 64))
+N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:latest
+POSTGRES_IMAGE=postgres@sha256:$(printf '2%.0s' $(seq 64))
+POSTGRES_IMAGE_REF=postgres:16-alpine
+VALKEY_IMAGE=valkey/valkey@sha256:$(printf '3%.0s' $(seq 64))
+VALKEY_IMAGE_REF=valkey/valkey:8-alpine
+POSTGRES_USER=n8n
+POSTGRES_DB=n8n
+POSTGRES_PASSWORD=$(printf 'a%.0s' $(seq 48))
+N8N_ENCRYPTION_KEY=$(printf 'b%.0s' $(seq 64))
+VA_SITE_ADDRS="n.example.com www.example.org"
+N8N_HOST=www.example.org
+WEBHOOK_URL=https://www.example.org/
+N8N_EDITOR_BASE_URL=https://www.example.org
+ENV
+  chmod 600 "$DATA/.env"
+}
+
+# env_keys <file>: the keys of a .env file, sorted.
+env_keys() {
+  sed -n 's/^\([A-Za-z0-9_]*\)=.*/\1/p' "$1" | sort
+}
+
+@test "the update fill adds every key env.tmpl gained since the previous release and keeps every line" {
+  old_env
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  # Every line the server had comes first, byte for byte.
+  head -n 14 "$BATS_TEST_TMPDIR/out" | cmp - "$DATA/.env"
+  for kv in GENERIC_TIMEZONE=UTC TZ=UTC "${N8N_SECURITY_SETTINGS[@]}"; do
+    grep -qxF "$kv" "$BATS_TEST_TMPDIR/out"
+  done
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$BATS_TEST_TMPDIR/out"
+  # The keys are then exactly the template's, each once.
+  diff <(env_keys "$BATS_TEST_TMPDIR/out") <(env_keys "$APP_DIR/env.tmpl")
+}
+
+@test "the update fill keeps a value the server already has and never adds a key twice" {
+  old_env
+  printf 'GENERIC_TIMEZONE=Europe/Bucharest\nN8N_BLOCK_ENV_ACCESS_IN_NODE=false\nVALKEY_PASSWORD=keep-me\n' >>"$DATA/.env"
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  head -n 17 "$BATS_TEST_TMPDIR/out" | cmp - "$DATA/.env"
+  for k in GENERIC_TIMEZONE N8N_BLOCK_ENV_ACCESS_IN_NODE VALKEY_PASSWORD; do
+    [ "$(grep -c "^$k=" "$BATS_TEST_TMPDIR/out")" -eq 1 ]
+  done
+  grep -qxF VALKEY_PASSWORD=keep-me "$BATS_TEST_TMPDIR/out"
+  diff <(env_keys "$BATS_TEST_TMPDIR/out") <(env_keys "$APP_DIR/env.tmpl")
+}
+
+@test "the update fill never makes up the database password, the encryption key, a URL or an image" {
+  old_env
+  sed -i -E '/^(POSTGRES_PASSWORD|N8N_ENCRYPTION_KEY|N8N_HOST|WEBHOOK_URL|VA_SITE_ADDRS|N8N_IMAGE)=/d' "$DATA/.env"
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  refute_grep -qE '^(POSTGRES_PASSWORD|N8N_ENCRYPTION_KEY|N8N_HOST|WEBHOOK_URL|VA_SITE_ADDRS|N8N_IMAGE)=' "$BATS_TEST_TMPDIR/out"
+  refute_grep -qE '@[A-Z0-9_]+@' "$BATS_TEST_TMPDIR/out"
+  grep -qxF TZ=UTC "$BATS_TEST_TMPDIR/out"
+}
+
+@test "a second update fill adds nothing and keeps the Valkey password it made" {
+  old_env
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/once"
+  cp "$BATS_TEST_TMPDIR/once" "$DATA/.env"
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/twice"
+  cmp "$BATS_TEST_TMPDIR/once" "$BATS_TEST_TMPDIR/twice"
+}
+
+@test "an .env without a final newline gets the new keys on lines of their own" {
+  old_env
+  sed -i '$d' "$DATA/.env"
+  printf 'N8N_EDITOR_BASE_URL=https://www.example.org' >>"$DATA/.env"
+  n8n_fill_env "$DATA/.env" >"$BATS_TEST_TMPDIR/out"
+  grep -qxF 'N8N_EDITOR_BASE_URL=https://www.example.org' "$BATS_TEST_TMPDIR/out"
+  grep -qxF TZ=UTC "$BATS_TEST_TMPDIR/out"
+}
+
+@test "app_update_env fills the keys and re-resolves the images into the out file, never the .env" {
+  old_env
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  app_update_env "$DATA/.env" "$BATS_TEST_TMPDIR/out"
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  grep -qxF TZ=UTC "$BATS_TEST_TMPDIR/out"
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$BATS_TEST_TMPDIR/out"
+  want="$(printf '%s' postgres:16-alpine | sha256sum | cut -d' ' -f1)"
+  grep -qxF "POSTGRES_IMAGE=postgres@sha256:$want" "$BATS_TEST_TMPDIR/out"
+  grep -qxF "POSTGRES_PASSWORD=$(printf 'a%.0s' $(seq 48))" "$BATS_TEST_TMPDIR/out"
+  grep -qxF "N8N_ENCRYPTION_KEY=$(printf 'b%.0s' $(seq 64))" "$BATS_TEST_TMPDIR/out"
+}
+
+@test "app_update_env fails with nothing in the out file when an image cannot be resolved" {
+  old_env
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  : >"$STUB_TMP/inspect_fail"
+  run app_update_env "$DATA/.env" "$BATS_TEST_TMPDIR/out"
+  [ "$status" -eq 1 ]
+  [ ! -s "$BATS_TEST_TMPDIR/out" ]
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+}
