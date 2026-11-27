@@ -408,26 +408,33 @@ n8n_hold_major() {
 # lacks, so a server installed from an earlier release gets the settings added since (app_prepare
 # never rewrites an existing .env). A missing key gets its value from the template when that value
 # is a constant, and VALKEY_PASSWORD a new secret as at install. A value the install derived (the
-# database password, the encryption key, the URLs, the images) is never made up here. The one line
-# it changes is the image tag the previous release installed with, latest, which becomes stable
+# database password, the encryption key, the URLs, the images) is never made up here. Two lines
+# can change: an empty VALKEY_PASSWORD gets a new secret in its place (a password that is set is
+# never changed), and the image tag the previous release installed with, latest, becomes stable
 # (VA_N8N_IMAGE_REF); a tag set by hand stays.
 n8n_fill_env() {
-  local line valkey_pw=""
+  local line valkey_pw="" vp_at="" vp_value=""
   local -a lines=()
   local -A have=()
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:latest" ]; then
       line="N8N_IMAGE_REF=$VA_N8N_IMAGE_REF"
     fi
+    if [[ "$line" =~ ^VALKEY_PASSWORD=(.*)$ ]]; then
+      vp_at="${#lines[@]}" vp_value="${BASH_REMATCH[1]}"
+    fi
     lines+=("$line")
     if [[ "$line" =~ ^([A-Za-z0-9_]+)= ]]; then
       have["${BASH_REMATCH[1]}"]=1
     fi
   done <"$1" || return 1
-  if [ -z "${have[VALKEY_PASSWORD]+x}" ]; then
+  # An empty password (the last line wins, as in compose) counts as missing: a new one goes on it.
+  case "$vp_value" in "" | '""' | "''")
     valkey_pw="$(openssl rand -hex 32)" || return 1
     [[ "$valkey_pw" =~ ^[0-9a-f]{64}$ ]] || return 1
-  fi
+    [ -z "$vp_at" ] || lines[vp_at]="VALKEY_PASSWORD=$valkey_pw"
+    ;;
+  esac
   [ "${#lines[@]}" -eq 0 ] || printf '%s\n' "${lines[@]}"
   while IFS= read -r line || [ -n "$line" ]; do
     [[ "$line" =~ ^([A-Za-z0-9_]+)= ]] || continue
