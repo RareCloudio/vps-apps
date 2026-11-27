@@ -44,9 +44,15 @@ if [ -n "$host" ]; then
 fi
 echo "  Status: $status"
 if [ -f "$R/root/vps-apps-credentials.txt" ]; then
-  echo "  The password you set does not meet the n8n rules: the generated login is in /root/vps-apps-credentials.txt"
+  echo "  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"
 elif [ -n "$email" ]; then
   echo "  Login: $email, with the password you set when you ordered this server. 'rc status' shows the details."
+elif [ "$app" = nextcloud ] || [ "$app" = uptimekuma ]; then
+  echo "  Login: admin, with the password you set when you ordered this server."
+elif [ "$app" = wordpress ] && [ -n "$host" ]; then
+  echo "  Login: https://$host/wp-admin/ as admin, with the password you set when you ordered this server."
+elif [ "$app" = forgejo ]; then
+  echo "  Login: gitadmin, with the password you set when you ordered this server. Git over SSH: port 2222."
 else
   echo "  Login: use the password you set when you ordered this server. 'rc status' shows the details."
 fi

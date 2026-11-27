@@ -482,6 +482,43 @@ APP
   [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }
 
+@test "rc refuses an APP it does not know" {
+  printf 'APP=foo\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
+  run "$RC" status
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"has no valid APP"* ]]
+}
+
+# loads_app <app>: with app.env naming <app>, rc loads that app's own installed hooks (a stub that
+# logs its name) and rc domain add reaches its app_domain_added.
+loads_app() {
+  local dir
+  dir="$(p "/opt/vps-apps/current/apps/$1")"
+  mkdir -p "$dir" "$(p "/opt/vps-apps-data/$1")"
+  printf 'app_compose_files() { printf "%%s\\n" "%s/compose.yml"; }\n' "$dir" >"$dir/app.sh"
+  printf 'app_domain_added() { printf "%%s %%s\\n" %s "$1" >>"$STUB_TMP/hook.log"; }\n' "$1" >>"$dir/app.sh"
+  printf 'APP=%s\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\n' "$1" >"$ETC/app.env"
+  run "$RC" domain add shop.example.com
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STUB_TMP/hook.log")" = "$1 shop.example.com" ]
+}
+
+@test "rc takes APP=nextcloud and loads its hooks" {
+  loads_app nextcloud
+}
+
+@test "rc takes APP=forgejo and loads its hooks" {
+  loads_app forgejo
+}
+
+@test "rc takes APP=wordpress and loads its hooks" {
+  loads_app wordpress
+}
+
+@test "rc takes APP=uptimekuma and loads its hooks" {
+  loads_app uptimekuma
+}
+
 @test "the motd reads the host from app.env, and from the bootstrap's env file without it" {
   rm "$ETC/env"
   printf 'APP=n8n\nMODE=\nVA_HOST=other.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
@@ -504,4 +541,45 @@ APP
   printf 'APP=docker\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=owner@example.org\n' >"$ETC/app.env"
   run "$MOTD_SRC"
   refute_grep -qF 'owner@example.org' <<<"$output"
+}
+
+# motd_for <app>: the login message of a server that runs <app>, with an owner email recorded.
+motd_for() {
+  printf 'APP=%s\nMODE=\nVA_HOST=app.example.com\nVA_IP=203.0.113.7\nADMIN_EMAIL=owner@example.org\n' "$1" >"$ETC/app.env"
+  run "$MOTD_SRC"
+  [ "$status" -eq 0 ]
+}
+
+@test "the motd names the Nextcloud login" {
+  motd_for nextcloud
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+  refute_grep -qF 'owner@example.org' <<<"$output"
+}
+
+@test "the motd names the WordPress login page and login" {
+  motd_for wordpress
+  [[ "$output" == *"  Login: https://app.example.com/wp-admin/ as admin, with the password you set when you ordered this server."* ]]
+  refute_grep -qF 'owner@example.org' <<<"$output"
+}
+
+@test "the motd names the Forgejo login and the git SSH port" {
+  motd_for forgejo
+  [[ "$output" == *"  Login: gitadmin, with the password you set when you ordered this server. Git over SSH: port 2222."* ]]
+}
+
+@test "the motd names the Uptime Kuma login" {
+  motd_for uptimekuma
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+}
+
+@test "the motd points to the credentials file before any login hint, for every app" {
+  local app
+  mkdir -p "$(p /root)"
+  : >"$(p /root/vps-apps-credentials.txt)"
+  for app in n8n nextcloud forgejo wordpress uptimekuma; do
+    motd_for "$app"
+    [[ "$output" == *"  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"* ]]
+    refute_grep -q 'Login:' <<<"$output"
+    refute_grep -q 'n8n' <<<"$output"
+  done
 }

@@ -3,14 +3,16 @@
 # Windows with the Windows OpenSSH client, or any bash). It never creates or deletes a server.
 #
 # Usage:
-#   tests/e2e/vps-smoke.sh --ssh-key <path> --ip <ipv4> --app <docker|n8n> [--mode starter|pro] \
+#   tests/e2e/vps-smoke.sh --ssh-key <path> --ip <ipv4>
+#     --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro] \
 #     --version <sha40> --password-file <file> [--checks 1,2,3] [--expect-pw-auth yes|no|auto]
 #
 # One PASS or FAIL line per check, in the form `PASS <n> <name>` or `FAIL <n> <name>: <reason>`.
 # Exit 0 only when every selected check passed. Progress goes to stderr. The password is read from
-# the file and sent over ssh stdin or through jq stdin; it is never printed and never put on a
-# command line. The rendered recipe holds it, so it lives only in a 0700 temp dir that is removed
-# when the script ends.
+# the file and sent over ssh stdin, through jq stdin, in a curl config on stdin (curl -K -) or read
+# by curl from a file in the temp dir; it is never printed and never put on a command line. The
+# rendered recipe holds it, so it lives only in a 0700 temp dir that is removed when the script
+# ends.
 # shellcheck disable=SC2016 # remote commands are single-quoted on purpose: they expand on the VPS
 set -euo pipefail
 # The Virtualizor tokens are replaced as plain text; an "&" in a password must stay an "&".
@@ -20,7 +22,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: vps-smoke.sh --ssh-key <path> --ip <ipv4> --app <docker|n8n> [--mode starter|pro]
+usage: vps-smoke.sh --ssh-key <path> --ip <ipv4>
+                    --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro]
                     --version <sha40> --password-file <file> [--checks 1,2,3,...]
                     [--expect-pw-auth yes|no|auto] [--probe-host <ipv4>]
 checks:
@@ -37,9 +40,14 @@ checks:
   11 nft-reboot     nft -c passes; no "ordering cycle" in the journal after a reboot
   12 rc-port        rc port open/close leaves DOCKER-USER without a stale rule or a duplicate
   13 ssh            sshd on 22, password login and authorized_keys as the VPS shows them
-Default checks: docker 1 2 3 5 7 8 9 10 11 12 13; n8n 1 2 3 4 7 8 9 10 11 12 13. Check 6 is never
-a default (it installs by itself, so it cannot follow check 1). Selected checks run in this order:
-1 6 2 3 4 5 7 8 10 12 13 9 11.
+  14 nextcloud      WebDAV as admin answers 207, a wrong password 401 (nextcloud only)
+  15 forgejo        API login as gitadmin, sign-up closed, git SSH on 2222 (forgejo only)
+  16 wordpress      wp-login.php as admin, installer closed, registration off, xmlrpc.php 403 (wordpress only)
+  17 uptimekuma     setup no longer offered, admin logs in through the proxy (uptimekuma only)
+Default checks: docker 1 2 3 5 7 8 9 10 11 12 13; n8n 1 2 3 4 7 8 9 10 11 12 13; nextcloud,
+forgejo, wordpress and uptimekuma 1 2 3, their own check (14 to 17), then 7 8 9 10 11 12 13.
+Check 6 is never a default (it installs by itself, so it cannot follow check 1). Selected checks
+run in this order: 1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11.
 USAGE
   exit 2
 }
@@ -68,7 +76,10 @@ done
 
 octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 [[ "$IP" =~ ^${octet}(\.${octet}){3}$ ]] || { echo "vps-smoke: --ip must be an IPv4 address" >&2; usage; }
-case "$APP" in docker | n8n) ;; *) echo "vps-smoke: --app must be docker or n8n" >&2; usage ;; esac
+case "$APP" in
+  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma) ;;
+  *) echo "vps-smoke: --app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma" >&2; usage ;;
+esac
 case "$MODE" in
   "") ;;
   starter | pro) [ "$APP" = n8n ] || { echo "vps-smoke: --mode only goes with --app n8n" >&2; usage; } ;;
@@ -83,14 +94,21 @@ if [ -n "$PROBE" ]; then
 fi
 case "$EXPECT_PW" in yes | no | auto) ;; *) echo "vps-smoke: --expect-pw-auth must be yes, no or auto" >&2; usage ;; esac
 
-ORDER=(1 6 2 3 4 5 7 8 10 12 13 9 11)
+ORDER=(1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11)
 if [ -z "$CHECKS" ]; then
-  if [ "$APP" = docker ]; then CHECKS="1,2,3,5,7,8,9,10,11,12,13"; else CHECKS="1,2,3,4,7,8,9,10,11,12,13"; fi
+  case "$APP" in
+    docker) CHECKS="1,2,3,5,7,8,9,10,11,12,13" ;;
+    n8n) CHECKS="1,2,3,4,7,8,9,10,11,12,13" ;;
+    nextcloud) CHECKS="1,2,3,14,7,8,9,10,11,12,13" ;;
+    forgejo) CHECKS="1,2,3,15,7,8,9,10,11,12,13" ;;
+    wordpress) CHECKS="1,2,3,16,7,8,9,10,11,12,13" ;;
+    uptimekuma) CHECKS="1,2,3,17,7,8,9,10,11,12,13" ;;
+  esac
 fi
 SELECTED=" "
 IFS=',' read -r -a _picked <<<"$CHECKS"
 for n in "${_picked[@]}"; do
-  [[ "$n" =~ ^([1-9]|1[0-3])$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 13" >&2; usage; }
+  [[ "$n" =~ ^([1-9]|1[0-7])$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 17" >&2; usage; }
   SELECTED="$SELECTED$n "
 done
 if [[ "$SELECTED" == *" 1 "* && "$SELECTED" == *" 6 "* ]]; then
@@ -114,6 +132,11 @@ if [ "$SSH_BIN" != ssh ] && [ -x "$(dirname "$SSH_BIN")/ssh-keygen.exe" ]; then
 else
   KEYGEN_BIN=ssh-keygen
 fi
+if [ "$SSH_BIN" != ssh ] && [ -x "$(dirname "$SSH_BIN")/ssh-keyscan.exe" ]; then
+  KEYSCAN_BIN="$(dirname "$SSH_BIN")/ssh-keyscan.exe"
+else
+  KEYSCAN_BIN=ssh-keyscan
+fi
 
 # winpath <path>: the form a native Windows program understands; the path itself elsewhere.
 winpath() {
@@ -129,7 +152,8 @@ trap cleanup EXIT
 
 IPD="${IP//./-}"
 HOST="$IPD.sslip.io"
-# The customer email Virtualizor puts in {{username}}; it becomes the n8n owner login.
+# The customer email Virtualizor puts in {{username}}; it becomes the n8n owner login and the
+# WordPress admin email.
 OWNER_EMAIL="e2e-owner@$HOST"
 KNOWN_HOSTS="$TMP/known_hosts"
 JAR="$TMP/jar"
@@ -216,6 +240,79 @@ https_has() {
   local out
   out="$(curl_t -fsS --max-time 15 "$1" 2>/dev/null)" || return 1
   grep -q "$2" <<<"$out"
+}
+
+# curl_cred <user> <password file> <curl args...>: curl with the basic credential in a config read
+# on stdin (curl -K -), so the password is on no command line. In the config's double quotes a
+# backslash and a double quote are escaped. Transport errors are retried as in curl_t, and every
+# attempt gets the config again.
+curl_cred() {
+  local cfg pw try out rc bs="\\" q='"'
+  pw="$(
+    cat "$2"
+    printf x
+  )"
+  pw="${pw%x}"
+  # Quoted replacements: an unquoted \\\\ collapses to one backslash in bash 5.3.
+  pw="${pw//"$bs"/"$bs$bs"}"
+  pw="${pw//"$q"/"$bs$q"}"
+  cfg="user = \"$1:$pw\""
+  pw=""
+  shift 2
+  for try in 1 2 3 4; do
+    rc=0
+    out="$(curl -K - "$@" <<<"$cfg")" || rc=$?
+    case "$rc" in
+      35 | 52 | 56 | 7 | 28) ;;
+      *) break ;;
+    esac
+    [ "$try" -lt 4 ] || break
+    say "curl transport error $rc, retry $try of 3" 2>&9
+    sleep 2
+  done
+  printf '%s' "$out"
+  return "$rc"
+}
+
+# app_health_path: the page Nextcloud, Forgejo, WordPress and Uptime Kuma answer once they are up
+# (the one their ready check reads); nothing for docker and n8n. Uptime Kuma's / only redirects.
+app_health_path() {
+  case "$APP" in
+    nextcloud) echo /status.php ;;
+    forgejo) echo /api/healthz ;;
+    wordpress) echo '/?rest_route=/' ;;
+    uptimekuma) echo /api/entry-page ;;
+  esac
+}
+
+# app_health_ok <name>: https://<name><health path> loads with a valid certificate and says the app
+# is up: Nextcloud installed, Forgejo's health check passing, WordPress naming https://<host> as its
+# home, Uptime Kuma's entry page.
+app_health_ok() {
+  local out
+  out="$(curl_t -fsS --max-time 15 "https://$1$(app_health_path)" 2>/dev/null)" || return 1
+  case "$APP" in
+    nextcloud) jq -e '.installed == true' <<<"$out" ;;
+    forgejo) jq -e '.status == "pass"' <<<"$out" ;;
+    wordpress) jq -e --arg h "https://$HOST" '.home == $h' <<<"$out" ;;
+    uptimekuma) jq -e '.type == "entryPage"' <<<"$out" ;;
+    *) false ;;
+  esac >/dev/null 2>&1
+}
+
+# app_pw_file <file>: the password the app's admin logs in with, into <file>: the generated one from
+# /root/vps-apps-credentials.txt when the install had to make one (NOTE then says so), else the
+# install password. The generated one is read over ssh into the private temp dir, never printed.
+app_pw_file() {
+  local gen
+  gen="$(vcmd 'sed -n "s/^Password: //p" /root/vps-apps-credentials.txt 2>/dev/null | head -n 1' 2>/dev/null | tr -d '\r\n')" || gen=""
+  if [ -n "$gen" ]; then
+    printf '%s' "$gen" >"$1"
+    NOTE="the install password was refused: logged in with the generated one from /root/vps-apps-credentials.txt"
+  else
+    printf '%s' "$PW" >"$1"
+  fi
+  gen=""
 }
 
 # tcp_open <host> <port>: 0 when a TCP connection is made within 5 seconds. With --probe-host the
@@ -393,6 +490,10 @@ check_3_https() {
   [ "$vr" = 0 ] || { fail "certificate verify result is '$vr'"; return 1; }
   if [ "$APP" = docker ] && ! grep -q 'Your Docker server is ready' "$body"; then
     fail "the Docker landing page text is missing"
+    return 1
+  fi
+  if [ -n "$(app_health_path)" ] && ! retry 120 5 app_health_ok "$HOST"; then
+    fail "https://$HOST$(app_health_path) does not answer as a running $APP"
     return 1
   fi
 }
@@ -785,6 +886,20 @@ check_7_domain() {
     NOTE="refusal as designed"
     return 0
   fi
+  if [ "$APP" = wordpress ]; then
+    # Designed refusal: WordPress keeps one address, since its links are stored in its database.
+    out="$(vcmd_t 900 "rc domain add $domain" 2>&1)" || rc=$?
+    [ "$rc" -eq 1 ] || { fail "rc domain add exited $rc, expected the refusal (exit 1): $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"; return 1; }
+    grep -q 'serves one address' <<<"$out" || { fail "rc domain add did not say WordPress serves one address: $out"; return 1; }
+    vcmd 'test ! -e /etc/vps-apps/domains' >/dev/null 2>&1 || { fail "/etc/vps-apps/domains was created although rc refused"; return 1; }
+    retry 120 5 app_health_ok "$HOST" || { fail "the primary name https://$HOST/ stopped serving WordPress"; return 1; }
+    NOTE="refusal as designed"
+    return 0
+  fi
+  if [ "$APP" != n8n ]; then
+    check_7_app_domain "$domain"
+    return
+  fi
   vcmd_t 900 "rc domain add $domain" >&2 2>&1 || { fail "rc domain add $domain failed"; return 1; }
   vcmd "grep -qxF $domain /etc/vps-apps/domains" >/dev/null 2>&1 || { fail "$domain is not in /etc/vps-apps/domains"; return 1; }
   {
@@ -816,6 +931,47 @@ EOF
   }
   [ "$(http_code "https://$HOST/")" = 200 ] || { fail "the primary name https://$HOST/ stopped answering"; return 1; }
   rm -f "$body"
+}
+
+# check_7_app_domain <domain>: check 7 for Nextcloud, Forgejo and Uptime Kuma. The new name serves
+# the app, the .env and the recreated container's caddy label list both names, the app's own
+# settings follow the newest name (Forgejo's URL variables, Nextcloud's overwrite.cli.url and
+# trusted_domains), and the server's own name keeps serving.
+check_7_app_domain() {
+  local domain="$1" r
+  vcmd_t 900 "rc domain add $domain" >&2 2>&1 || { fail "rc domain add $domain failed"; return 1; }
+  vcmd "grep -qxF $domain /etc/vps-apps/domains" >/dev/null 2>&1 || { fail "$domain is not in /etc/vps-apps/domains"; return 1; }
+  retry 300 5 app_health_ok "$domain" || { fail "https://$domain$(app_health_path) does not answer as a running $APP"; return 1; }
+  r="$(vscript "$APP" "$HOST" "$domain" <<'EOF'
+envf="/opt/vps-apps-data/$1/.env"
+case "$1" in
+  uptimekuma) svc=uptime-kuma ;;
+  *) svc="$1" ;;
+esac
+grep -qxF "VA_SITE_ADDRS=\"$2 $3\"" "$envf" || { echo "env VA_SITE_ADDRS"; exit 1; }
+c="$(docker ps -q --filter "label=com.docker.compose.project=vps-apps-$1" --filter "label=com.docker.compose.service=$svc" | head -n 1)"
+[ -n "$c" ] || { echo "no $svc container"; exit 1; }
+[ "$(docker inspect -f '{{index .Config.Labels "caddy"}}' "$c")" = "$2 $3" ] || { echo "container caddy label"; exit 1; }
+case "$1" in
+  forgejo)
+    grep -qxF "FORGEJO_DOMAIN=$3" "$envf" || { echo "env FORGEJO_DOMAIN"; exit 1; }
+    grep -qxF "FORGEJO_ROOT_URL=https://$3/" "$envf" || { echo "env FORGEJO_ROOT_URL"; exit 1; }
+    e="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c")"
+    printf '%s\n' "$e" | grep -qxF "FORGEJO__server__ROOT_URL=https://$3/" || { echo "container ROOT_URL"; exit 1; }
+    printf '%s\n' "$e" | grep -qxF "FORGEJO__server__DOMAIN=$3" || { echo "container DOMAIN"; exit 1; }
+    ;;
+  nextcloud)
+    occ() { docker exec -u www-data "$c" php occ --no-interaction "$@" </dev/null; }
+    [ "$(occ config:system:get overwrite.cli.url)" = "https://$3" ] || { echo "overwrite.cli.url"; exit 1; }
+    t="$(occ config:system:get trusted_domains)"
+    printf '%s\n' "$t" | grep -qxF "$2" || { echo "trusted_domains without $2"; exit 1; }
+    printf '%s\n' "$t" | grep -qxF "$3" || { echo "trusted_domains without $3"; exit 1; }
+    ;;
+esac
+echo ok
+EOF
+  )" || { fail "the $APP settings do not follow the new name: $r"; return 1; }
+  retry 120 5 app_health_ok "$HOST" || { fail "the primary name https://$HOST$(app_health_path) stopped answering"; return 1; }
 }
 
 check_8_hub64() {
@@ -975,11 +1131,125 @@ EOF
   NOTE="pwauth=$actual rootlogin=$(getv rootlogin) keys=${keys:-0}"
 }
 
+# --- the apps with an admin login: nextcloud, forgejo, wordpress, uptimekuma ------------------
+
+# nc_propfind <password file>: the HTTP status of a WebDAV PROPFIND on the admin's files as admin,
+# retried for up to a minute while nothing or a 5xx answers; 000 when nothing answered.
+nc_propfind() {
+  local deadline=$((SECONDS + 60)) code
+  while :; do
+    code="$(curl_cred admin "$1" -sS -o /dev/null -w '%{http_code}' --max-time 30 -X PROPFIND -H 'Depth: 0' \
+      "https://$HOST/remote.php/dav/files/admin/" 2>/dev/null)" || code=000
+    case "$code" in
+      000 | 5??) ;;
+      *) break ;;
+    esac
+    [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 5
+  done
+  printf '%s' "${code:-000}"
+}
+
+check_14_nextcloud() {
+  local pwf="$TMP/app.pw" bad="$TMP/bad.pw" code
+  [ "$APP" = nextcloud ] || { fail "needs --app nextcloud"; return 1; }
+  ensure_ready || return 1
+  app_pw_file "$pwf"
+  say "nextcloud: WebDAV PROPFIND as admin"
+  code="$(nc_propfind "$pwf")"
+  rm -f "$pwf"
+  [ "$code" = 207 ] || { fail "PROPFIND /remote.php/dav/files/admin/ as admin answered HTTP $code, expected 207"; return 1; }
+  say "nextcloud: a wrong password is refused"
+  printf 'wrong-%s' "$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')" >"$bad"
+  code="$(nc_propfind "$bad")"
+  rm -f "$bad"
+  [ "$code" = 401 ] || { fail "PROPFIND with a wrong password answered HTTP $code, expected 401"; return 1; }
+}
+
+check_15_forgejo() {
+  local pwf="$TMP/app.pw" code out
+  [ "$APP" = forgejo ] || { fail "needs --app forgejo"; return 1; }
+  ensure_ready || return 1
+  app_pw_file "$pwf"
+  say "forgejo: API login as gitadmin"
+  : >"$BODY"
+  code="$(curl_cred gitadmin "$pwf" -sS -o "$(winpath "$BODY")" -w '%{http_code}' --max-time 30 \
+    "https://$HOST/api/v1/user" 2>/dev/null)" || code=000
+  rm -f "$pwf"
+  [ "$code" = 200 ] || { fail "GET /api/v1/user as gitadmin answered HTTP $code"; return 1; }
+  jq -e '.login == "gitadmin" and .is_admin == true' "$BODY" >/dev/null 2>&1 ||
+    { fail "GET /api/v1/user is not the site admin gitadmin: $(head -c 200 "$BODY")"; return 1; }
+  say "forgejo: sign-up is closed"
+  out="$(curl_t -fsS --max-time 30 -H 'Accept-Language: en-US' "https://$HOST/user/sign_up" 2>/dev/null)" || out=""
+  grep -q 'Registration is disabled' <<<"$out" || { fail "/user/sign_up does not say Registration is disabled"; return 1; }
+  say "forgejo: git over SSH answers on port 2222"
+  out="$(timeout 60 "$KEYSCAN_BIN" -T 10 -p 2222 "$HOST" 2>/dev/null | tr -d '\r')" || out=""
+  grep -qE ' (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) AAAA' <<<"$out" ||
+    { fail "ssh-keyscan -p 2222 $HOST returned no host key"; return 1; }
+}
+
+check_16_wordpress() {
+  local pwf="$TMP/app.pw" hdrs="$TMP/wp.headers" out path
+  [ "$APP" = wordpress ] || { fail "needs --app wordpress"; return 1; }
+  ensure_ready || return 1
+  app_pw_file "$pwf"
+  say "wordpress: log in through wp-login.php as admin"
+  : >"$hdrs"
+  out="$(curl_t -sS --max-time 30 -o /dev/null -D "$(winpath "$hdrs")" -w '%{http_code} %{redirect_url}' \
+    -b 'wordpress_test_cookie=WP%20Cookie%20check' --data-urlencode 'log=admin' \
+    --data-urlencode "pwd@$(winpath "$pwf")" --data-urlencode 'testcookie=1' \
+    "https://$HOST/wp-login.php" 2>/dev/null)" || out=""
+  rm -f "$pwf"
+  [ "$out" = "302 https://$HOST/wp-admin/" ] ||
+    { fail "POST /wp-login.php as admin answered '$out', expected a 302 to https://$HOST/wp-admin/"; return 1; }
+  grep -qi '^set-cookie: wordpress_logged_in_' "$hdrs" || { fail "the login set no wordpress_logged_in_ cookie"; return 1; }
+  rm -f "$hdrs"
+  say "wordpress: the installer is closed"
+  out="$(curl_t -sS --max-time 30 "https://$HOST/wp-admin/install.php" 2>/dev/null)" || out=""
+  grep -q 'Already Installed' <<<"$out" || { fail "/wp-admin/install.php does not say Already Installed"; return 1; }
+  say "wordpress: registration is off"
+  out="$(curl_t -sS --max-time 30 -o /dev/null -w '%{http_code} %{redirect_url}' \
+    "https://$HOST/wp-login.php?action=register" 2>/dev/null)" || out=""
+  [[ "$out" == 30[0-9]" "*"registration=disabled"* ]] ||
+    { fail "/wp-login.php?action=register answered '$out', expected a redirect to registration=disabled"; return 1; }
+  # WordPress itself would answer an XML-RPC call with 200; the proxy refuses the path and below it.
+  say "wordpress: xmlrpc.php is refused with 403"
+  for path in /xmlrpc.php /xmlrpc.php/x; do
+    out="$(curl_t -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: text/xml' \
+      --data '<?xml version="1.0"?><methodCall><methodName>system.listMethods</methodName></methodCall>' \
+      "https://$HOST$path" 2>/dev/null)" || out=""
+    [ "$out" = 403 ] || { fail "POST $path answered HTTP '$out', expected 403"; return 1; }
+  done
+}
+
+# uk_cmd <mode>: the remote command that runs apps/uptimekuma/admin.js <mode> https://<host> with the
+# app container's own node, the way the installer does, so the call goes out through the proxy.
+uk_cmd() {
+  printf '%s' 'UK=/opt/vps-apps/current/apps/uptimekuma; docker compose -f "$UK/compose.yml" -f "$UK/compose.expose.yml"'
+  printf '%s' ' --env-file /opt/vps-apps-data/uptimekuma/.env exec -T uptime-kuma node -e "$(cat "$UK/admin.js")"'
+  printf ' %s https://%s' "$1" "$HOST"
+}
+
+check_17_uptimekuma() {
+  local pwf="$TMP/app.pw" out rc=0
+  [ "$APP" = uptimekuma ] || { fail "needs --app uptimekuma"; return 1; }
+  ensure_ready || return 1
+  say "uptimekuma: the first-run setup is no longer offered"
+  out="$(vcmd_t 180 "$(uk_cmd need-setup)" 2>/dev/null | tr -d '\r\n')" || out=""
+  [ "$out" = false ] || { fail "admin.js need-setup over https://$HOST printed '$out', expected false"; return 1; }
+  app_pw_file "$pwf"
+  say "uptimekuma: admin logs in with the password"
+  timeout 180 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "$(uk_cmd login)" <"$pwf" >/dev/null 2>&1 || rc=$?
+  rm -f "$pwf"
+  [ "$rc" -eq 0 ] || { fail "admin.js login over https://$HOST exited $rc"; return 1; }
+}
+
 name_of() {
   case "$1" in
     1) echo install ;; 2) echo status ;; 3) echo https ;; 4) echo n8n ;; 5) echo docker ;;
     6) echo resume ;; 7) echo domain ;; 8) echo hub-64 ;; 9) echo timer ;; 10) echo docker-info ;;
-    11) echo nft-reboot ;; 12) echo rc-port ;; 13) echo ssh ;;
+    11) echo nft-reboot ;; 12) echo rc-port ;; 13) echo ssh ;; 14) echo nextcloud ;; 15) echo forgejo ;;
+    16) echo wordpress ;; 17) echo uptimekuma ;;
   esac
 }
 func_of() {
@@ -987,7 +1257,8 @@ func_of() {
     1) echo check_1_install ;; 2) echo check_2_status ;; 3) echo check_3_https ;; 4) echo check_4_n8n ;;
     5) echo check_5_docker ;; 6) echo check_6_resume ;; 7) echo check_7_domain ;; 8) echo check_8_hub64 ;;
     9) echo check_9_timer ;; 10) echo check_10_docker_info ;; 11) echo check_11_nft_reboot ;;
-    12) echo check_12_rc_port ;; 13) echo check_13_ssh ;;
+    12) echo check_12_rc_port ;; 13) echo check_13_ssh ;; 14) echo check_14_nextcloud ;;
+    15) echo check_15_forgejo ;; 16) echo check_16_wordpress ;; 17) echo check_17_uptimekuma ;;
   esac
 }
 

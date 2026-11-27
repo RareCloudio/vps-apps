@@ -1,0 +1,6 @@
+# Before exposure: WordPress answers on the server's own loopback only, so the site is installed and
+# its admin created before anyone else can reach wp-admin/install.php.
+services:
+  wordpress:
+    ports:
+      - "127.0.0.1:8080:80"

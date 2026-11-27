@@ -14,6 +14,46 @@ setup() {
   [ "$status" -eq 2 ]
 }
 
+@test "an unknown --app names every app, in the error and in the usage" {
+  run bash "$INSTALL" --app foo --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma"* ]]
+  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma>"* ]]
+}
+
+# parses_as <app>: parse_args takes --app <app> and sets VA_APP to it.
+parses_as() {
+  run bash -c '. "$1"; parse_args --app "$3" --host a.example.com --ip 1.2.3.4 --password-file "$2"; printf "%s" "$VA_APP"' \
+    _ "$INSTALL" "$PWF" "$1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$1" ]
+}
+
+@test "--app nextcloud is accepted" {
+  parses_as nextcloud
+}
+
+@test "--app forgejo is accepted" {
+  parses_as forgejo
+}
+
+@test "--app wordpress is accepted" {
+  parses_as wordpress
+}
+
+@test "--app uptimekuma is accepted" {
+  parses_as uptimekuma
+}
+
+@test "--mode is rejected with every app but n8n" {
+  local app
+  for app in docker nextcloud forgejo wordpress uptimekuma; do
+    run bash "$INSTALL" --app "$app" --mode pro --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--mode is only valid with --app n8n"* ]]
+  done
+}
+
 @test "a missing --password-file exits 2" {
   run bash "$INSTALL" --app docker --host a.example.com --ip 1.2.3.4
   [ "$status" -eq 2 ]

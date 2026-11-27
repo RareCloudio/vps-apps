@@ -1,0 +1,86 @@
+# WordPress (Apache, PHP 8.4) on MariaDB, plus the WP-CLI service the installer runs one-off. The
+# secrets and image digests come from the .env under /opt/vps-apps-data/wordpress (compose reads it
+# through --env-file); the image defaults only keep the file valid on its own. Reached through
+# compose.setup.yml before exposure and compose.expose.yml after.
+name: vps-apps-wordpress
+
+# WordPress reads its whole configuration from the environment (the image's wp-config-docker.php:
+# https://github.com/docker-library/wordpress/blob/master/wp-config-docker.php), so WP-CLI needs the
+# same variables to load the site (https://hub.docker.com/_/wordpress, "cli" variants).
+# The image's wp-config.php already sets $_SERVER['HTTPS'] when X-Forwarded-Proto is https, which
+# Caddy sends. WP_HOME and WP_SITEURL fix the one address WordPress uses for its links, and keep
+# Settings > General from moving the site to a name the proxy does not serve.
+x-wordpress-env: &wordpress-env
+  WORDPRESS_DB_HOST: db
+  WORDPRESS_DB_NAME: ${DB_NAME:-wordpress}
+  WORDPRESS_DB_USER: ${DB_USER:-wordpress}
+  WORDPRESS_DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set}
+  WORDPRESS_AUTH_KEY: ${WORDPRESS_AUTH_KEY:?WORDPRESS_AUTH_KEY is not set}
+  WORDPRESS_SECURE_AUTH_KEY: ${WORDPRESS_SECURE_AUTH_KEY:?WORDPRESS_SECURE_AUTH_KEY is not set}
+  WORDPRESS_LOGGED_IN_KEY: ${WORDPRESS_LOGGED_IN_KEY:?WORDPRESS_LOGGED_IN_KEY is not set}
+  WORDPRESS_NONCE_KEY: ${WORDPRESS_NONCE_KEY:?WORDPRESS_NONCE_KEY is not set}
+  WORDPRESS_AUTH_SALT: ${WORDPRESS_AUTH_SALT:?WORDPRESS_AUTH_SALT is not set}
+  WORDPRESS_SECURE_AUTH_SALT: ${WORDPRESS_SECURE_AUTH_SALT:?WORDPRESS_SECURE_AUTH_SALT is not set}
+  WORDPRESS_LOGGED_IN_SALT: ${WORDPRESS_LOGGED_IN_SALT:?WORDPRESS_LOGGED_IN_SALT is not set}
+  WORDPRESS_NONCE_SALT: ${WORDPRESS_NONCE_SALT:?WORDPRESS_NONCE_SALT is not set}
+  WORDPRESS_CONFIG_EXTRA: |
+    define('WP_HOME', 'https://${WP_HOST:?WP_HOST is not set}');
+    define('WP_SITEURL', 'https://${WP_HOST:?WP_HOST is not set}');
+
+services:
+  db:
+    image: ${MARIADB_IMAGE:-mariadb:12.3}
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-wordpress}
+      MARIADB_USER: ${DB_USER:-wordpress}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is not set}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is not set}
+      # root only through the socket inside the container, never over the network.
+      MARIADB_ROOT_HOST: localhost
+      # rc update moves within 12.3; this runs mariadb-upgrade when a new image needs it.
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - db_data:/var/lib/mysql
+    # --connect alone passes during the image's init, which runs without networking; together with
+    # --innodb_initialized it means the server is really up (https://mariadb.com/docs/server/
+    # server-management/automated-mariadb-deployment-and-administration/docker-and-mariadb/using-healthcheck-sh).
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  wordpress:
+    image: ${WORDPRESS_IMAGE:-wordpress:php8.4-apache}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *wordpress-env
+    volumes:
+      - wordpress_data:/var/www/html
+      # PHP's own 2M upload limit refuses a phone photo or a theme zip.
+      - /opt/vps-apps-data/wordpress/php.ini:/usr/local/etc/php/conf.d/vps-apps.ini:ro
+
+  # WP-CLI, run one-off with "run --rm cli wp ...", never started by "up" (profile). It shares the
+  # site files and the database network. The image runs as Alpine's www-data (uid 82); the site's
+  # files belong to Debian's www-data (uid 33), hence the user and a writable HOME
+  # (https://hub.docker.com/_/wordpress, "Running as an arbitrary user").
+  cli:
+    image: ${WPCLI_IMAGE:-wordpress:cli-2-php8.4}
+    profiles: ["cli"]
+    user: "33:33"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      <<: *wordpress-env
+      HOME: /tmp
+    volumes:
+      - wordpress_data:/var/www/html
+
+volumes:
+  db_data:
+  wordpress_data:

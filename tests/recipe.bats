@@ -106,6 +106,55 @@ install_recipe() {
   grep -q -- '--mode pro$' "$STUB_TMP/install.log"
 }
 
+@test "render-recipe names every app when --app is unknown, and takes --mode with n8n only" {
+  run "$RENDER" --app foo --version "$SHA"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma"* ]]
+  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma>"* ]]
+  local app
+  for app in docker nextcloud forgejo wordpress uptimekuma; do
+    run "$RENDER" --app "$app" --mode pro --version "$SHA"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--mode is only valid with --app n8n"* ]]
+  done
+}
+
+# renders_and_installs <app>: render-recipe takes --app <app>, and the bootstrap accepts the APP it
+# wrote and passes it on to install.sh.
+renders_and_installs() {
+  run_recipe 'Secret9A' --app "$1"
+  grep -qx "APP=$1" "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  grep -q -- "--app $1 --host h1.example.com " "$STUB_TMP/install.log"
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+}
+
+@test "a nextcloud recipe renders and its bootstrap runs install.sh --app nextcloud" {
+  renders_and_installs nextcloud
+}
+
+@test "a forgejo recipe renders and its bootstrap runs install.sh --app forgejo" {
+  renders_and_installs forgejo
+}
+
+@test "a wordpress recipe renders and its bootstrap runs install.sh --app wordpress" {
+  renders_and_installs wordpress
+}
+
+@test "an uptimekuma recipe renders and its bootstrap runs install.sh --app uptimekuma" {
+  renders_and_installs uptimekuma
+}
+
+@test "the bootstrap refuses an APP it does not know: failed:args" {
+  install_recipe
+  sed -i 's/^APP=.*/APP=foo/' "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/curl.log" ]
+  [ "$(status_now)" = "failed:args" ]
+}
+
 @test "a download failure counts an attempt and exits 0" {
   install_recipe
   echo 7 >"$STUB_TMP/curl_rc"

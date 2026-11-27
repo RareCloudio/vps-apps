@@ -9,7 +9,8 @@ Needs `bash`, `curl`, `jq` and an OpenSSH client on the machine that runs it (on
 ## Run
 
 ```bash
-tests/e2e/vps-smoke.sh --ssh-key <private key> --ip <ipv4> --app <docker|n8n> [--mode starter|pro] \
+tests/e2e/vps-smoke.sh --ssh-key <private key> --ip <ipv4> \
+  --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro] \
   --version <40-char commit> --password-file <file> [--checks 1,2,3] [--expect-pw-auth yes|no|auto] \
   [--probe-host <ipv4>]
 ```
@@ -21,7 +22,11 @@ tests/e2e/vps-smoke.sh --ssh-key <private key> --ip <ipv4> --app <docker|n8n> [-
 - `--password-file` holds the root password, byte for byte (no trailing newline: write it with `printf %s`).
   The brief's password is `PW=$'Ab1$"\x60\x27\\ x'`. The script substitutes it into the recipe exactly as
   Virtualizor does and never prints it. The rendered recipe is written only to a private temp dir that is
-  removed on exit, and the script refuses to run on a VPS where `/etc/vps-apps` already exists.
+  removed on exit, and the script refuses to run on a VPS where `/etc/vps-apps` already exists. The login
+  checks send it in a curl config on stdin (`curl -K -`), have curl read it from a file in that temp dir,
+  or send it over ssh stdin, so it is never on a command line.
+- When an app refused the password and generated one, its login check logs in with the generated password
+  from `/root/vps-apps-credentials.txt` and the PASS line says so.
 - The host name is `<ip-with-dashes>.sslip.io`. sslip.io is not on the Public Suffix List, so every run
   spends from Let's Encrypt's shared per-domain limit. Keep the runs few.
 - Output: one `PASS <n> <name>` or `FAIL <n> <name>: <reason>` line per check on stdout (a PASS may carry
@@ -53,21 +58,30 @@ of seconds, not two minutes.
 |---|------|----------------|
 | 1 | install | the rendered recipe runs as root with the nasty password; the timer is armed; the password file is byte-exact |
 | 2 | status | `/.well-known/rarecloud-app-status` reads `installing`, then `ready` |
-| 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate |
+| 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate; for Nextcloud, Forgejo, WordPress and Uptime Kuma the app's health page says it is up (below) |
 | 4 | n8n | n8n and its workers have `GENERIC_TIMEZONE=UTC` and `TZ=UTC`; in pro mode, Valkey answers `NOAUTH` without its password and `PONG` with it, and the password is on no command line in `ps`; login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
 | 5 | docker | whoami over HTTPS; postgres on 5432 closed, `rc port open`, restarts of docker and `vps-apps-nft`, `rc port close`, on IPv4 and IPv6 (docker only). Port 22 is probed first as a positive control |
 | 6 | resume | install killed after `app_up_setup`, the timer resumes it, same `.env` checksum (fresh OS only) |
-| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving |
+| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving. Nextcloud, Forgejo and Uptime Kuma: the health page answers on the new name, the `.env` and the container's caddy label list both names, Forgejo's URL variables and Nextcloud's `overwrite.cli.url` move to the new name, Nextcloud trusts both, and the first name keeps serving. Docker and WordPress: the designed refusal, and the first name keeps serving |
 | 8 | hub-64 | records the VPS IPv6 /64; the image pull count and Docker Hub rate limit headers are taken the moment the install is ready (before any restart), or reported as unreliable when that moment was not seen in this run |
 | 9 | timer | three minutes after ready: still ready, timer inactive and disabled, password file gone |
 | 10 | docker-info | `docker info` works with the `daemon.json` (firewall-backend iptables) |
 | 11 | nft-reboot | `nft -c` passes; no "ordering cycle" in the journal after a reboot; firewall back after boot |
 | 12 | rc-port | `rc port open 5432`, `open 6000`, `close 5432`: DOCKER-USER has no 5432 rule and no duplicates |
 | 13 | ssh | checks the configuration only: sshd listens on 22, `PasswordAuthentication` and `PermitRootLogin` match the keys in `authorized_keys`, the test key is still there (it does not try a password login) |
+| 14 | nextcloud | a WebDAV `PROPFIND` on `/remote.php/dav/files/admin/` as `admin` answers 207, and 401 with a wrong password (nextcloud only) |
+| 15 | forgejo | `GET /api/v1/user` as `gitadmin` names the site admin `gitadmin`; `/user/sign_up` says "Registration is disabled"; `ssh-keyscan -p 2222` gets a host key (forgejo only) |
+| 16 | wordpress | a `wp-login.php` login as `admin` gives a 302 to `/wp-admin/` and a `wordpress_logged_in_` cookie; `/wp-admin/install.php` says "Already Installed"; `?action=register` redirects to `registration=disabled`; a POST to `/xmlrpc.php` and `/xmlrpc.php/x` answers 403 (wordpress only) |
+| 17 | uptimekuma | `admin.js` run in the app container over `https://<ip-dashed>.sslip.io`: `need-setup` prints `false` and `login` as `admin` succeeds (uptimekuma only) |
 
-Default checks: docker `1 2 3 5 7 8 9 10 11 12 13`, n8n `1 2 3 4 7 8 9 10 11 12 13`. Check 6 installs by
-itself, so it is never a default and cannot be combined with check 1. Checks run in this order whatever
-the order of `--checks`: 1 6 2 3 4 5 7 8 10 12 13 9 11.
+The health page of check 3 and check 7: Nextcloud `/status.php` with `installed` true, Forgejo
+`/api/healthz` with `status` pass, WordPress `/?rest_route=/` with `home` `https://<ip-dashed>.sslip.io`,
+Uptime Kuma `/api/entry-page` with `type` entryPage (its `/` only redirects).
+
+Default checks: docker `1 2 3 5 7 8 9 10 11 12 13`, n8n `1 2 3 4 7 8 9 10 11 12 13`, and for nextcloud,
+forgejo, wordpress and uptimekuma `1 2 3`, the app's own check (14, 15, 16 or 17), then `7 8 9 10 11 12 13`.
+Check 6 installs by itself, so it is never a default and cannot be combined with check 1. Checks run in this
+order whatever the order of `--checks`: 1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11.
 
 Check 4 runs `rc update` while n8n's `stable` tag is on the major version the VPS runs. Holding n8n on that
 major when `stable` moves to a new one is covered by the bats tests only.
@@ -87,6 +101,15 @@ tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app docker --version $V --passwo
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app n8n --mode starter --version $V --password-file <pwfile>
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app n8n --mode pro --version $V --password-file <pwfile>
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app docker --version $V --password-file <pwfile> --checks 6,3,9
+```
+
+Each of the other apps gets one run of its own, also on a freshly reinstalled OS:
+
+```bash
+tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app nextcloud --version $V --password-file <pwfile>
+tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app forgejo --version $V --password-file <pwfile>
+tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app wordpress --version $V --password-file <pwfile>
+tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app uptimekuma --version $V --password-file <pwfile>
 ```
 
 ## Run log
