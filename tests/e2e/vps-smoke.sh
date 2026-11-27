@@ -22,13 +22,13 @@ usage() {
   cat >&2 <<'USAGE'
 usage: vps-smoke.sh --ssh-key <path> --ip <ipv4> --app <docker|n8n> [--mode starter|pro]
                     --version <sha40> --password-file <file> [--checks 1,2,3,...]
-                    [--expect-pw-auth yes|no|auto]
+                    [--expect-pw-auth yes|no|auto] [--probe-host <ipv4>]
 checks:
    1 install        render the recipe, substitute the Virtualizor tokens, run it as root
    2 status         /.well-known/rarecloud-app-status reads installing, then ready
    3 https          https://<ip-dashed>.sslip.io/ answers with a valid certificate
    4 n8n            login, workflow run, password change, reboot, rc update (n8n only)
-   5 docker         whoami over HTTPS, postgres closed/open/closed on IPv4 (+IPv6) (docker only)
+   5 docker         whoami over HTTPS, postgres closed/open/closed, IPv4 + IPv6 (docker only)
    6 resume         kill the install after app_up_setup, the timer resumes it (needs a fresh OS)
    7 domain         rc domain add app.<ip-dashed>.sslip.io serves the app on that name too
    8 hub-64         record the IPv6 /64, the pulls of the install and the Docker Hub rate limit
@@ -44,10 +44,10 @@ USAGE
   exit 2
 }
 
-SSH_KEY="" IP="" APP="" MODE="" VERSION="" PWFILE="" CHECKS="" EXPECT_PW="auto"
+SSH_KEY="" IP="" APP="" MODE="" VERSION="" PWFILE="" CHECKS="" EXPECT_PW="auto" PROBE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ssh-key | --ip | --app | --mode | --version | --password-file | --checks | --expect-pw-auth)
+    --ssh-key | --ip | --app | --mode | --version | --password-file | --checks | --expect-pw-auth | --probe-host)
       [ $# -ge 2 ] || usage
       case "$1" in
         --ssh-key) SSH_KEY="$2" ;;
@@ -58,6 +58,7 @@ while [ $# -gt 0 ]; do
         --password-file) PWFILE="$2" ;;
         --checks) CHECKS="$2" ;;
         --expect-pw-auth) EXPECT_PW="$2" ;;
+        --probe-host) PROBE="$2" ;;
       esac
       shift 2
       ;;
@@ -76,6 +77,10 @@ esac
 [[ "$VERSION" =~ ^[0-9a-f]{40}$ ]] || { echo "vps-smoke: --version must be 40 lowercase hex characters" >&2; usage; }
 [ -f "$SSH_KEY" ] || { echo "vps-smoke: --ssh-key file not found" >&2; usage; }
 [ -f "$PWFILE" ] || { echo "vps-smoke: --password-file not found" >&2; usage; }
+if [ -n "$PROBE" ]; then
+  [[ "$PROBE" =~ ^${octet}(\.${octet}){3}$ ]] || { echo "vps-smoke: --probe-host must be an IPv4 address" >&2; usage; }
+  [ "$PROBE" != "$IP" ] || { echo "vps-smoke: --probe-host must be another server than --ip" >&2; usage; }
+fi
 case "$EXPECT_PW" in yes | no | auto) ;; *) echo "vps-smoke: --expect-pw-auth must be yes, no or auto" >&2; usage ;; esac
 
 ORDER=(1 6 2 3 4 5 7 8 10 12 13 9 11)
@@ -150,16 +155,23 @@ fail() {
   return 1
 }
 
+# Every remote call has a ceiling (120 s by default), so a hung remote command cannot block the run.
 # vcmd <command string>: run on the VPS as root, stdin closed.
-vcmd() { "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "$1" </dev/null; }
-# vcmd_t <seconds> <command string>: the same with a ceiling.
+vcmd() { timeout 120 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "$1" </dev/null; }
+# vcmd_t <seconds> <command string>: the same with another ceiling.
 vcmd_t() {
   local secs="$1"
   shift
   timeout "$secs" "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "$1" </dev/null
 }
-# vscript [args...]: run the script on stdin with bash on the VPS. Args must be plain tokens.
-vscript() { "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "bash -s -- $*"; }
+# vscript_t <seconds> [args...]: run the script on stdin with bash on the VPS. Args must be plain tokens.
+vscript_t() {
+  local secs="$1"
+  shift
+  timeout "$secs" "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" "bash -s -- $*"
+}
+# vscript [args...]: vscript_t with the default ceiling.
+vscript() { vscript_t 120 "$@"; }
 
 wait_ssh() {
   local deadline=$((SECONDS + $1))
@@ -176,8 +188,21 @@ http_code() {
 
 status_now() { curl -s --max-time 5 "http://$IP/.well-known/rarecloud-app-status" 2>/dev/null | tr -d '\r\n' || true; }
 
-# tcp_open <host> <port>: 0 when a TCP connection is made within 5 seconds.
+# tcp_open <host> <port>: 0 when a TCP connection is made within 5 seconds. With --probe-host the
+# attempt is made from that server over ssh; an ssh failure there is not a "closed" answer, it sets
+# PROBE_BROKEN so that a negative probe cannot pass for the wrong reason.
+PROBE_BROKEN=no
 tcp_open() {
+  local out
+  if [ -n "$PROBE" ]; then
+    out="$(timeout 40 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$PROBE" \
+      "if timeout 5 bash -c 'exec 3<>\"/dev/tcp/$1/$2\"' 2>/dev/null; then echo OPEN; else echo CLOSED; fi" </dev/null 2>/dev/null | tr -d '\r\n')" || out=""
+    case "$out" in
+      OPEN) return 0 ;;
+      CLOSED) return 1 ;;
+      *) PROBE_BROKEN=yes; return 1 ;;
+    esac
+  fi
   timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null
 }
 
@@ -224,10 +249,11 @@ deploy_recipe() {
   fi
   vcmd 'systemctl is-enabled vps-apps-install.timer >/dev/null && systemctl is-active vps-apps-install.timer >/dev/null' >/dev/null 2>&1 ||
     { fail "vps-apps-install.timer is not enabled and active after the recipe"; return 1; }
-  # The password reached the VPS byte for byte (the file is destroyed at ready; skip if it is gone).
+  # The password reached the VPS byte for byte (the file is destroyed only at ready, minutes later).
   local_sum="$(printf '%s' "$PW" | sha256sum | cut -d' ' -f1)"
   remote_sum="$(vcmd 'test -f /etc/vps-apps/password && sha256sum /etc/vps-apps/password | cut -d" " -f1 || true' 2>/dev/null | tr -d '\r\n')"
-  if [ -n "$remote_sum" ] && [ "$remote_sum" != "$local_sum" ]; then
+  [ -n "$remote_sum" ] || { fail "/etc/vps-apps/password does not exist right after the recipe"; return 1; }
+  if [ "$remote_sum" != "$local_sum" ]; then
     fail "/etc/vps-apps/password is not the password byte for byte"
     return 1
   fi
@@ -246,6 +272,23 @@ dump_install_log() {
 # wait_ready: polls the public status until ready. Sets SAW_INSTALLING. A failed:<step> that
 # stays for five minutes (the timer retries every minute) is final.
 SAW_INSTALLING=no
+FAILED_SEEN=""
+FACTS=""
+# capture_facts: the Docker Hub pull count and rate limit headers, taken the moment the install is
+# ready, before any check restarts the daemon or reboots (the event buffer is not durable).
+capture_facts() {
+  FACTS="$(vscript <<'EOF' 2>/dev/null | tr -d '\r'
+pulls="$(docker events --since 24h --until "$(date +%s)" --filter type=image --filter event=pull --format x 2>/dev/null | wc -l)"
+tok="$(curl -fsS --max-time 20 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull' 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+hdr=""
+if [ -n "$tok" ]; then
+  hdr="$(curl -fsSI --max-time 20 -H "Authorization: Bearer $tok" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest 2>/dev/null | tr -d '\r' | grep -i '^\(ratelimit-limit\|ratelimit-remaining\|docker-ratelimit-source\):' | tr '\n' ' ')"
+fi
+echo "pulls=$pulls hub: ${hdr:-no rate limit headers}"
+EOF
+  )" || FACTS=""
+}
+
 wait_ready() {
   local deadline=$((SECONDS + 3000)) last="" now failed_since=0
   while :; do
@@ -256,8 +299,13 @@ wait_ready() {
     fi
     case "$now" in
       installing) SAW_INSTALLING=yes; failed_since=0 ;;
-      ready) READY=yes; return 0 ;;
+      ready)
+        READY=yes
+        if [ "$SAW_INSTALLING" = yes ]; then capture_facts; else FACTS="unreliable: ready was not observed being installed in this run"; fi
+        return 0
+        ;;
       failed:*)
+        [[ " $FAILED_SEEN " == *" $now "* ]] || FAILED_SEEN="$FAILED_SEEN $now"
         [ "$failed_since" -ne 0 ] || failed_since=$SECONDS
         if [ $((SECONDS - failed_since)) -ge 300 ]; then
           READY=no
@@ -293,6 +341,7 @@ check_1_install() {
   local r
   r="$(vcmd '. /etc/os-release; echo "$ID $VERSION_ID"' 2>&1)" || { fail "cannot ssh to root@$IP: $r"; return 1; }
   [ "$r" = "ubuntu 24.04" ] || { fail "the VPS runs '$r', not ubuntu 24.04"; return 1; }
+  vcmd 'test ! -e /etc/vps-apps' >/dev/null 2>&1 || { fail "/etc/vps-apps already exists: this is not a fresh VPS, reinstall the OS first"; return 1; }
   deploy_recipe
 }
 
@@ -300,6 +349,7 @@ check_2_status() {
   SAW_INSTALLING=no
   wait_ready || return 1
   [ "$SAW_INSTALLING" = yes ] || { fail "the status never read installing before ready"; return 1; }
+  NOTE="attempts=$(vcmd 'cat /var/lib/vps-apps/attempts 2>/dev/null || echo unknown' | tr -d '\r\n') failed-seen=${FAILED_SEEN:-none}"
 }
 
 check_3_https() {
@@ -366,6 +416,7 @@ n8n_api_executions() {
 reboot_vps() {
   local before after deadline
   before="$(vcmd 'cat /proc/sys/kernel/random/boot_id' | tr -d '\r\n')"
+  [ -n "$before" ] || { REASON="cannot read the boot id before the reboot"; return 1; }
   say "rebooting the VPS"
   vcmd 'systemctl reboot' >/dev/null 2>&1 || true
   deadline=$((SECONDS + 600))
@@ -445,7 +496,11 @@ EOF
     n8n_req PATCH /rest/me/password body
   [ "$CODE" = 200 ] || { fail "PATCH /rest/me/password answered HTTP $CODE: $(head -c 200 "$BODY")"; return 1; }
   : >"$JAR"
-  n8n_login "$oldpw" 20 && { fail "the old password still works after the change"; return 1; }
+  if n8n_login "$oldpw" 20; then fail "the old password still works after the change"; return 1; fi
+  case "$CODE" in
+    401 | 403) ;;
+    *) fail "the old password was not explicitly rejected (HTTP $CODE, expected 401 or 403)"; return 1 ;;
+  esac
   n8n_login "$newpw" 30 || { fail "the new password does not log in (HTTP $CODE)"; return 1; }
 
   reboot_vps || { fail "the VPS did not come back after the reboot"; return 1; }
@@ -470,17 +525,27 @@ EOF
 TARGETS=()
 HAVE_V6=no
 V6_ADDR=""
+# detect_targets: the targets the reachability probes use. With --probe-host IPv6 is required, from a
+# second server that must itself have IPv6; without it IPv6 is tested only when this PC has it.
 detect_targets() {
+  local pv6=""
   TARGETS=("$IP")
   HAVE_V6=no
   V6_ADDR="$(vscript <<'EOF' | tr -d '\r\n'
 ip -6 -o addr show scope global 2>/dev/null | awk '!/deprecated|temporary/ { sub("/.*", "", $4); print $4; exit }'
 EOF
   )" || V6_ADDR=""
-  if [ -z "$V6_ADDR" ]; then
-    NOTE="IPv6 not tested: the VPS has no global IPv6 address"
+  if [ -n "$PROBE" ]; then
+    [ -n "$V6_ADDR" ] || { REASON="--probe-host needs IPv6: the target VPS has no global IPv6 address"; return 1; }
+    pv6="$(timeout 120 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$PROBE" \
+      "ip -6 -o addr show scope global 2>/dev/null | awk '!/deprecated|temporary/ { sub(\"/.*\", \"\", \$4); print \$4; exit }'" </dev/null 2>/dev/null | tr -d '\r\n')" || pv6=""
+    [ -n "$pv6" ] || { REASON="--probe-host needs IPv6 and $PROBE has no global IPv6 address (or ssh to it failed)"; return 1; }
+    HAVE_V6=yes
+    TARGETS+=("$V6_ADDR")
+  elif [ -z "$V6_ADDR" ]; then
+    NOTE="IPv6 NOT TESTED: the VPS has no global IPv6 address"
   elif ! tcp_open 2606:4700:4700::1111 443; then
-    NOTE="IPv6 not tested: this PC has no IPv6 connectivity"
+    NOTE="IPv6 NOT TESTED: this PC has no IPv6 connectivity (use --probe-host)"
   else
     HAVE_V6=yes
     TARGETS+=("$V6_ADDR")
@@ -494,6 +559,10 @@ unreachable() {
     for _ in 1 2; do
       if tcp_open "$t" "$1"; then
         REASON="port $1 answers on $t but should be closed"
+        return 1
+      fi
+      if [ "$PROBE_BROKEN" = yes ]; then
+        REASON="the probe host gave no answer over ssh, so port $1 on $t was not really tested"
         return 1
       fi
     done
@@ -513,7 +582,7 @@ reachable() {
 }
 
 pg_wait() {
-  vscript <<'EOF' >/dev/null 2>&1
+  vscript_t 200 <<'EOF' >/dev/null 2>&1
 for i in $(seq 60); do
   docker exec smoke-pg pg_isready -U postgres -q && exit 0
   sleep 2
@@ -555,11 +624,14 @@ check_5_docker() {
   local body="$TMP/whoami.body" rc=0
   [ "$APP" = docker ] || { fail "needs --app docker"; return 1; }
   ensure_ready || return 1
-  detect_targets
+  detect_targets || return 1
+  # Positive control: the probe path reaches every target on port 22 (always open), so a later
+  # "closed" answer means the firewall, not a broken path.
+  reachable 22 || { REASON="control failed: $REASON"; return 1; }
   c5_cleanup
 
   say "docker: whoami behind the proxy"
-  vscript "$IPD" <<'EOF' >/dev/null 2>&1 || { fail "cannot start the whoami container"; return 1; }
+  vscript_t 600 "$IPD" <<'EOF' >/dev/null 2>&1 || { fail "cannot start the whoami container"; return 1; }
 set -e
 docker run -d --name smoke-whoami --network web \
   --label "caddy=whoami.$1.sslip.io" \
@@ -570,7 +642,7 @@ EOF
   rm -f "$body"
 
   say "docker: postgres published on 5432"
-  vscript <<'EOF' >/dev/null 2>&1 || { fail "cannot start the postgres container"; return 1; }
+  vscript_t 600 <<'EOF' >/dev/null 2>&1 || { fail "cannot start the postgres container"; return 1; }
 set -e
 docker run -d --name smoke-pg -e POSTGRES_PASSWORD=x -p 5432:5432 postgres:16-alpine
 EOF
@@ -586,29 +658,31 @@ EOF
 }
 
 check_6_resume() {
-  local out sum_before sum_after env_file
+  local out sum_before sum_after env_file killed_status
   env_file="/opt/vps-apps-data/$APP/.env"
   r="$(vcmd '. /etc/os-release; echo "$ID $VERSION_ID"' 2>&1)" || { fail "cannot ssh to root@$IP: $r"; return 1; }
-  vcmd 'test ! -e /var/lib/vps-apps/steps' >/dev/null 2>&1 || { fail "this VPS already has install steps; reinstall the OS first"; return 1; }
+  vcmd 'test ! -e /etc/vps-apps' >/dev/null 2>&1 || { fail "/etc/vps-apps already exists: this is not a fresh VPS, reinstall the OS first"; return 1; }
   deploy_recipe || return 1
   say "resume: waiting for app_up_setup, then killing the install"
-  out="$(vscript "$env_file" <<'EOF'
+  out="$(vscript_t 2500 "$env_file" <<'EOF'
 marker=/var/lib/vps-apps/steps/app_up_setup.done
 end=$((SECONDS + 2400))
 until [ -f "$marker" ]; do
-  [ "$SECONDS" -lt "$end" ] && sleep 0.2 || { echo "TIMEOUT"; exit 1; }
+  [ "$SECONDS" -lt "$end" ] && sleep 0.2 || { echo "TIMEOUT||"; exit 1; }
 done
 systemctl kill --signal=SIGKILL vps-apps-install.service || true
 sleep 1
 st="$(cat /var/lib/vps-apps/public/.well-known/rarecloud-app-status 2>/dev/null || true)"
 sum="$(sha256sum "$1" | cut -d' ' -f1)"
-echo "KILLED $sum $st"
+echo "KILLED|$sum|$st"
 EOF
   )" || { fail "could not kill the install after app_up_setup: $out"; return 1; }
-  case "$out" in KILLED\ *) ;; *) fail "unexpected kill output: $out"; return 1 ;; esac
-  sum_before="$(printf '%s' "$out" | tr -d '\r' | awk '{print $2}')"
-  [ "$(printf '%s' "$out" | tr -d '\r' | awk '{print $3}')" != ready ] || { fail "the install was already ready when it was killed"; return 1; }
-  say "resume: killed ($out); the timer must resume it within a minute"
+  out="$(printf '%s' "$out" | tr -d '\r\n')"
+  case "$out" in KILLED\|*\|*) ;; *) fail "unexpected kill output: $out"; return 1 ;; esac
+  IFS='|' read -r _ sum_before killed_status <<<"$out"
+  [[ "$sum_before" =~ ^[0-9a-f]{64}$ ]] || { fail "no .env checksum before the kill: $out"; return 1; }
+  [ "$killed_status" != ready ] || { fail "the install was already ready when it was killed"; return 1; }
+  say "resume: killed (status '$killed_status'); the timer must resume it within a minute"
   SAW_INSTALLING=no
   wait_ready || return 1
   sum_after="$(vcmd "sha256sum $env_file | cut -d' ' -f1" | tr -d '\r\n')"
@@ -664,16 +738,11 @@ check_8_hub64() {
   out="$(vscript <<'EOF'
 prefix="$(ip -6 route show 2>/dev/null | awk '$1 ~ /\/64$/ && $1 !~ /^fe80/ { print $1; exit }')"
 addr="$(ip -6 -o addr show scope global 2>/dev/null | awk '!/deprecated|temporary/ { print $4; exit }')"
-pulls="$(docker events --since 24h --until "$(date +%s)" --filter type=image --filter event=pull --format x 2>/dev/null | wc -l)"
-tok="$(curl -fsS --max-time 20 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull' 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
-hdr=""
-if [ -n "$tok" ]; then
-  hdr="$(curl -fsSI --max-time 20 -H "Authorization: Bearer $tok" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest 2>/dev/null | tr -d '\r' | grep -i '^\(ratelimit-limit\|ratelimit-remaining\|docker-ratelimit-source\):' | tr '\n' ' ')"
-fi
-echo "v6-prefix=${prefix:-none} v6-addr=${addr:-none} pulls=$pulls hub: ${hdr:-no rate limit headers}"
+echo "v6-prefix=${prefix:-none} v6-addr=${addr:-none}"
 EOF
-  )" || { fail "cannot collect the Docker Hub facts over ssh"; return 1; }
-  NOTE="$(printf '%s' "$out" | tr -d '\r')"
+  )" || { fail "cannot read the IPv6 facts over ssh"; return 1; }
+  # The pull count and the Hub headers were taken at ready, before any restart or reboot.
+  NOTE="$(printf '%s' "$out" | tr -d '\r\n') ${FACTS:-unreliable: not captured in this run}"
 }
 
 check_9_timer() {
@@ -695,31 +764,57 @@ check_9_timer() {
 }
 
 check_10_docker_info() {
-  local out
+  local out info jump chain
   ensure_ready || return 1
   vcmd 'grep -q "\"firewall-backend\": \"iptables\"" /etc/docker/daemon.json' >/dev/null 2>&1 ||
     { fail "/etc/docker/daemon.json has no firewall-backend iptables"; return 1; }
   vcmd 'systemctl is-active docker' >/dev/null 2>&1 || { fail "the docker service is not active"; return 1; }
-  vcmd 'docker info' >/dev/null 2>&1 || { fail "docker info fails with the daemon.json in place"; return 1; }
-  out="$(vcmd 'docker info 2>/dev/null | grep -i "firewall" || true' | tr -d '\r')"
-  if [ -n "$out" ] && ! grep -qi iptables <<<"$out"; then
-    fail "docker info reports a different firewall backend: $out"
+  info="$(vcmd 'docker info 2>&1' | tr -d '\r')" || { fail "docker info fails with the daemon.json in place"; return 1; }
+  [ -n "$info" ] || { fail "docker info printed nothing"; return 1; }
+  out="$(printf '%s\n' "$info" | grep -i 'firewall' || true)"
+  chain=no
+  jump=no
+  vcmd 'iptables -S DOCKER >/dev/null 2>&1 && iptables -S DOCKER-USER >/dev/null 2>&1' >/dev/null 2>&1 && chain=yes
+  vcmd 'iptables -S FORWARD | grep -q -- "-j DOCKER-USER"' >/dev/null 2>&1 && jump=yes
+  if [ -n "$out" ]; then
+    grep -qi iptables <<<"$out" || { fail "docker info reports a different firewall backend: $out"; return 1; }
+  elif [ "$chain" = yes ] && [ "$jump" = yes ]; then
+    NOTE="docker info has no firewall line; iptables chains DOCKER and DOCKER-USER exist and FORWARD jumps to DOCKER-USER"
+  else
+    fail "no positive sign of the iptables backend: docker info has no firewall line, DOCKER/DOCKER-USER chains=$chain, FORWARD jump=$jump"
     return 1
   fi
-  vcmd 'journalctl -u docker -b --no-pager 2>/dev/null | grep -qiE "unknown (field|option)|failed to start daemon|unable to configure the Docker daemon"' >/dev/null 2>&1 &&
-    { fail "the docker journal reports a configuration error"; return 1; }
+  out="$(vscript <<'EOF'
+echo "lines=$(journalctl -u docker -b --no-pager 2>/dev/null | wc -l)"
+echo "errors=$(journalctl -u docker -b --no-pager 2>/dev/null | grep -ciE 'unknown (field|option)|failed to start daemon|unable to configure the Docker daemon' || true)"
+EOF
+  )" || { fail "cannot read the docker journal"; return 1; }
+  out="$(printf '%s' "$out" | tr -d '\r')"
+  [ "$(printf '%s\n' "$out" | sed -n 's/^lines=//p')" -ge 1 ] 2>/dev/null || { fail "the docker journal is empty, so it proves nothing"; return 1; }
+  [ "$(printf '%s\n' "$out" | sed -n 's/^errors=//p')" = 0 ] || { fail "the docker journal reports a configuration error"; return 1; }
   return 0
 }
 
 check_11_nft_reboot() {
-  local out
+  local out lines cycles
   ensure_ready || return 1
   vcmd 'nft -c -f /etc/vps-apps/vps-apps.nft' >/dev/null 2>&1 || { fail "nft -c -f /etc/vps-apps/vps-apps.nft fails"; return 1; }
-  reboot_vps || { fail "the VPS did not come back after the reboot"; return 1; }
-  out="$(vcmd 'journalctl -b --no-pager 2>/dev/null | grep -i "ordering cycle" || true' | tr -d '\r')"
-  [ -z "$out" ] || { fail "ordering cycle in the boot journal: $(printf '%s' "$out" | head -n 2 | tr '\n' ' ')"; return 1; }
-  vcmd 'systemctl is-active vps-apps-nft docker >/dev/null' >/dev/null 2>&1 || { fail "vps-apps-nft or docker is not active after reboot"; return 1; }
-  vcmd 'nft list table inet vps_apps >/dev/null' >/dev/null 2>&1 || { fail "table inet vps_apps is not loaded after reboot"; return 1; }
+  reboot_vps || { [ -n "$REASON" ] || REASON="the VPS did not come back after the reboot"; return 1; }
+  # Positive control first: the boot journal must hold lines, or "no ordering cycle" proves nothing.
+  out="$(vscript <<'EOF'
+echo "lines=$(journalctl -b --no-pager 2>/dev/null | wc -l)"
+echo "cycles=$(journalctl -b --no-pager 2>/dev/null | grep -ci 'ordering cycle' || true)"
+EOF
+  )" || { fail "cannot read the boot journal after the reboot"; return 1; }
+  out="$(printf '%s' "$out" | tr -d '\r')"
+  lines="$(printf '%s\n' "$out" | sed -n 's/^lines=//p')"
+  cycles="$(printf '%s\n' "$out" | sed -n 's/^cycles=//p')"
+  { [[ "$lines" =~ ^[0-9]+$ ]] && [ "$lines" -ge 50 ]; } || { fail "the boot journal has only '$lines' lines, so it proves nothing"; return 1; }
+  [ "$cycles" = 0 ] || { fail "$cycles ordering cycle line(s) in the boot journal"; return 1; }
+  retry 120 3 vcmd 'systemctl is-active vps-apps-nft docker >/dev/null' >/dev/null 2>&1 ||
+    { fail "vps-apps-nft or docker is not active after reboot"; return 1; }
+  retry 120 3 vcmd 'nft list table inet vps_apps >/dev/null' >/dev/null 2>&1 ||
+    { fail "table inet vps_apps is not loaded after reboot"; return 1; }
   retry 120 3 vcmd 'iptables -S DOCKER-USER | grep -q -- "-j DROP"' >/dev/null 2>&1 ||
     { fail "DOCKER-USER has no drop rule after reboot"; return 1; }
   retry 300 5 bash -c '[ "$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "http://$1/.well-known/rarecloud-app-status")" = 200 ]' _ "$IP" ||
@@ -732,22 +827,32 @@ check_12_rc_port() {
   ensure_ready || return 1
   out="$(vscript <<'EOF' 2>&1
 set -e
+inspect() { # <iptables|ip6tables> <label>
+  rules="$($1 -S DOCKER-USER)"
+  [ -n "$rules" ] || { echo "$2: DOCKER-USER is empty or missing"; exit 1; }
+  if printf '%s\n' "$rules" | grep -q -- '--ctorigdstport 5432 '; then echo "$2: stale 5432 rule"; rc port close 6000 >/dev/null; exit 1; fi
+  n="$(printf '%s\n' "$rules" | grep -c -- '--ctorigdstport 6000 ' || true)"
+  if [ "$n" -ne 1 ]; then echo "$2: port 6000 has $n rules"; rc port close 6000 >/dev/null; exit 1; fi
+  d="$(printf '%s\n' "$rules" | sort | uniq -d)"
+  if [ -n "$d" ]; then echo "$2: duplicate rules: $d"; rc port close 6000 >/dev/null; exit 1; fi
+}
 rc port open 5432 >/dev/null
 rc port open 6000 >/dev/null
 rc port close 5432 >/dev/null
-rules="$(iptables -S DOCKER-USER)"
-if printf '%s\n' "$rules" | grep -q -- '--ctorigdstport 5432 '; then echo "stale 5432 rule"; rc port close 6000 >/dev/null; exit 1; fi
-n="$(printf '%s\n' "$rules" | grep -c -- '--ctorigdstport 6000 ')"
-if [ "$n" -ne 1 ]; then echo "port 6000 has $n rules"; rc port close 6000 >/dev/null; exit 1; fi
-d="$(printf '%s\n' "$rules" | sort | uniq -d)"
-if [ -n "$d" ]; then echo "duplicate rules: $d"; rc port close 6000 >/dev/null; exit 1; fi
+inspect iptables v4
+v6=no
+if [ -e /etc/vps-apps/docker-user.v6 ]; then inspect ip6tables v6; v6=yes; fi
 if grep -qx '5432/tcp' /etc/vps-apps/open-ports; then echo "5432/tcp still in open-ports"; rc port close 6000 >/dev/null; exit 1; fi
 rc port close 6000 >/dev/null
-rules="$(iptables -S DOCKER-USER)"
-if printf '%s\n' "$rules" | grep -q -- '--ctorigdstport 6000 '; then echo "stale 6000 rule after close"; exit 1; fi
-echo ok
+for t in iptables ip6tables; do
+  [ "$t" = ip6tables ] && [ "$v6" = no ] && continue
+  if $t -S DOCKER-USER | grep -q -- '--ctorigdstport 6000 '; then echo "$t: stale 6000 rule after close"; exit 1; fi
+done
+echo "ok v6=$v6"
 EOF
   )" || { fail "$(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"; return 1; }
+  case "$out" in *"ok v6="*) ;; *) fail "unexpected output: $out"; return 1 ;; esac
+  NOTE="$(printf '%s' "$out" | tail -n 1 | tr -d '\r')"
 }
 
 check_13_ssh() {
