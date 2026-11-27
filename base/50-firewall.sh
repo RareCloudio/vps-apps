@@ -11,6 +11,12 @@ fw_have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# fw_v6: true when the IPv6 layer can be used. ip6tables-restore exists on every Ubuntu, but on a
+# kernel booted with ipv6.disable=1 ip6tables cannot even list its filter table, and every load fails.
+fw_v6() {
+  fw_have ip6tables-restore && fw_have ip6tables && ip6tables -S >/dev/null 2>&1
+}
+
 # fw_norm_entry <port>[/tcp|/udp]: print "<port>/<proto>" with leading zeros removed (tcp when
 # no protocol is given), or fail. The one validator shared by rc port and the open-ports file.
 fw_norm_entry() {
@@ -135,7 +141,7 @@ fw_reload_boot_files() {
   if [ -f "$dir/docker-user.v4" ]; then
     iptables-restore -n "$dir/docker-user.v4" || true
   fi
-  if [ -f "$dir/docker-user.v6" ] && fw_have ip6tables-restore; then
+  if [ -f "$dir/docker-user.v6" ] && fw_v6; then
     ip6tables-restore -n "$dir/docker-user.v6" || true
   fi
 }
@@ -160,7 +166,7 @@ fw_apply_staged() {
   fi
   render_nft "$ports" >"$stage/vps-apps.nft" || return 1
   render_docker_user "$if4" "$ports" >"$stage/docker-user.v4" || return 1
-  if fw_have ip6tables-restore; then
+  if fw_v6; then
     v6=yes
     render_docker_user "$if6" "$ports" >"$stage/docker-user.v6" || return 1
   fi
