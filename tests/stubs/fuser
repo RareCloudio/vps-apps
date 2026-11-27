@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Test stub: logs argv to STUB_TMP/fuser.log. Reports the files as in use (exit 0) as many times as
+# the number in STUB_TMP/fuser_held says (one less per call; "forever" stays held), and as free
+# (exit 1, what fuser says for files no process has open) after that or when the file is absent.
+printf '%s\n' "$*" >>"${STUB_TMP:?}/fuser.log"
+f="$STUB_TMP/fuser_held"
+[ -f "$f" ] || exit 1
+n="$(cat "$f")"
+[ "$n" != forever ] || exit 0
+[ "$n" -gt 0 ] || exit 1
+echo $((n - 1)) >"$f"
+exit 0
