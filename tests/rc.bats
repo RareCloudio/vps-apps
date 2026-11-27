@@ -228,6 +228,56 @@ real_n8n_app() {
   grep -qE "^compose -f .*/n8n/compose\.yml .* up -d$" "$STUB_TMP/docker.log"
 }
 
+@test "rc update writes the app's app_fill_env first, on its own, and keeps it when an image cannot be resolved" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_fill_env() { echo fill >>"$STUB_TMP/order.log"; echo FILLED=1 >>"$1"; }
+app_update_env() { echo update >>"$STUB_TMP/order.log"; resolve_env_images "$1" "$2"; }
+APP
+  : >"$STUB_TMP/inspect_fail"
+  run "$RC" update
+  [ "$status" -ne 0 ]
+  [ "$(cat "$STUB_TMP/order.log")" = "$(printf 'fill\nupdate')" ]
+  grep -qxF FILLED=1 "$DATA/.env"
+  grep -qxF "N8N_IMAGE=a@$ZEROS" "$DATA/.env"
+  refute_grep -q ' pull$' "$STUB_TMP/docker.log"
+}
+
+@test "rc update stops before any image is resolved when the app's app_fill_env fails" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  cat >>"$APPDIR/app.sh" <<'APP'
+app_fill_env() { return 1; }
+APP
+  run "$RC" update
+  [ "$status" -eq 1 ]
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  refute_grep -q 'imagetools' "$STUB_TMP/docker.log"
+}
+
+@test "a pro n8n server from the previous release keeps the Valkey password rc update added, even when an image cannot be resolved" {
+  real_n8n_app
+  printf '%s\n' "N8N_IMAGE=docker.n8n.io/n8nio/n8n@$ZEROS" N8N_IMAGE_REF=docker.n8n.io/n8nio/n8n:latest \
+    "POSTGRES_IMAGE=postgres@$ZEROS" POSTGRES_IMAGE_REF=postgres:16-alpine \
+    "VALKEY_IMAGE=valkey/valkey@$ZEROS" VALKEY_IMAGE_REF=valkey/valkey:8-alpine \
+    "POSTGRES_PASSWORD=$(printf 'a%.0s' $(seq 48))" "N8N_ENCRYPTION_KEY=$(printf 'b%.0s' $(seq 64))" >"$DATA/.env"
+  chmod 600 "$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=c/c:1\n' "$ZEROS" >"$PROXY/.env"
+  : >"$STUB_TMP/inspect_fail"
+  run "$RC" update
+  [ "$status" -eq 1 ]
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$DATA/.env"
+  grep -qxF TZ=UTC "$DATA/.env"
+  [ "$(stat -c %a "$DATA/.env")" = 600 ]
+  grep -qxF "POSTGRES_PASSWORD=$(printf 'a%.0s' $(seq 48))" "$DATA/.env"
+  # No image moved.
+  grep -qxF "N8N_IMAGE=docker.n8n.io/n8nio/n8n@$ZEROS" "$DATA/.env"
+  grep -qxF "POSTGRES_IMAGE=postgres@$ZEROS" "$DATA/.env"
+  refute_grep -q ' pull$' "$STUB_TMP/docker.log"
+}
+
 @test "refresh_image_digests appends a missing image line and leaves other lines alone" {
   printf 'A=1\nB_IMAGE_REF=repo/b:2\n' >"$BATS_TEST_TMPDIR/e.env"
   refresh_image_digests "$BATS_TEST_TMPDIR/e.env"

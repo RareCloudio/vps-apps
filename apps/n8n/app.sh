@@ -288,17 +288,28 @@ app_domain_added() {
   app_compose up -d
 }
 
-# app_update_env <env-file> <out-file>: rc update's hook (bin/rc.d/update.sh). Writes to <out-file>
-# what the app .env becomes: the keys env.tmpl gained since this server was installed
-# (n8n_fill_env), then every image re-resolved from its tag (lib/images.sh), with n8n held on the
-# major version it runs (n8n_hold_major). <env-file> itself is not written. Fails when a key or an
-# image cannot be made.
+# app_fill_env <env-file>: rc update's first hook (bin/rc.d/update.sh). The keys env.tmpl gained
+# since this server was installed are added to <env-file> itself (n8n_fill_env), apart from and
+# before any image resolution, so a failed resolution never leaves a pro server without
+# VALKEY_PASSWORD. The file is replaced atomically, with its mode, and only when something changed.
+app_fill_env() {
+  local tmp rc=0
+  tmp="$(mktemp "$(dirname "$1")/.fill.XXXXXX")" || return 1
+  if n8n_fill_env "$1" >"$tmp"; then
+    cmp -s "$tmp" "$1" || write_atomic "$1" "$(stat -c %a "$1")" <"$tmp" || rc=1
+  else
+    rc=1
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# app_update_env <env-file> <out-file>: rc update's second hook. Writes to <out-file> what the app
+# .env becomes: every image re-resolved from its tag (lib/images.sh), with n8n held on the major
+# version it runs (n8n_hold_major). <env-file> itself is not written. Fails when an image cannot be
+# resolved.
 app_update_env() {
-  local filled rc=0
-  filled="$(mktemp)"
-  { n8n_fill_env "$1" >"$filled" && resolve_env_images "$filled" "$2"; } || rc=1
-  rm -f "$filled"
-  [ "$rc" -eq 0 ] || return 1
+  resolve_env_images "$1" "$2" || return 1
   n8n_hold_major "$1" "$2"
 }
 

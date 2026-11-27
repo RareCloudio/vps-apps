@@ -799,13 +799,43 @@ env_keys() {
   grep -qxF TZ=UTC "$BATS_TEST_TMPDIR/out"
 }
 
-@test "app_update_env fills the keys and re-resolves the images into the out file, never the .env" {
+@test "app_fill_env writes the missing keys into the .env itself, keeps its mode and resolves no image" {
   old_env
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  app_fill_env "$DATA/.env"
+  [ "$(stat -c %a "$DATA/.env")" = 600 ]
+  grep -qxF TZ=UTC "$DATA/.env"
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$DATA/.env"
+  diff <(head -n 14 "$DATA/.env" | grep -v '^N8N_IMAGE_REF=') <(grep -v '^N8N_IMAGE_REF=' "$BATS_TEST_TMPDIR/before")
+  refute_grep -q imagetools "$STUB_TMP/docker.log"
+  # Nothing left behind next to it.
+  [ "$(find "$DATA" -name '.*' -type f ! -name .env | wc -l)" -eq 0 ]
+}
+
+@test "app_fill_env leaves a complete .env as it is, not even rewritten" {
+  app_prepare
+  before="$(stat -c %i "$DATA/.env")"
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  app_fill_env "$DATA/.env"
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  [ "$(stat -c %i "$DATA/.env")" = "$before" ]
+}
+
+@test "app_fill_env fails and leaves the .env as it is when it cannot make the keys" {
+  old_env
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+  openssl() { return 1; }
+  run app_fill_env "$DATA/.env"
+  [ "$status" -eq 1 ]
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "app_update_env re-resolves the images into the out file and never writes the .env" {
+  old_env
+  app_fill_env "$DATA/.env"
   cp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
   app_update_env "$DATA/.env" "$BATS_TEST_TMPDIR/out"
   cmp "$DATA/.env" "$BATS_TEST_TMPDIR/before"
-  grep -qxF TZ=UTC "$BATS_TEST_TMPDIR/out"
-  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$BATS_TEST_TMPDIR/out"
   want="$(printf '%s' postgres:16-alpine | sha256sum | cut -d' ' -f1)"
   grep -qxF "POSTGRES_IMAGE=postgres@sha256:$want" "$BATS_TEST_TMPDIR/out"
   grep -qxF "POSTGRES_PASSWORD=$(printf 'a%.0s' $(seq 48))" "$BATS_TEST_TMPDIR/out"
