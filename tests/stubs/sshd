@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Test stub: logs argv (also into the shared calls.log, to check ordering against systemctl).
-# Exits with the code in STUB_TMP/sshd_rc when that file exists.
+# `sshd -t` exits with the code in STUB_TMP/sshd_rc when that file exists.
+# `sshd -T` prints "passwordauthentication <value>" taken from the drop-in under VPS_APPS_ROOT,
+# or the content of STUB_TMP/sshd_T_override when that file exists.
 printf '%s\n' "$*" >>"${STUB_TMP:?}/sshd.log"
 printf 'sshd %s\n' "$*" >>"$STUB_TMP/calls.log"
+if [ "${1:-}" = "-T" ]; then
+  if [ -f "$STUB_TMP/sshd_T_override" ]; then
+    cat "$STUB_TMP/sshd_T_override"
+  else
+    sed -n 's/^PasswordAuthentication \(.*\)$/passwordauthentication \1/p' "${VPS_APPS_ROOT:-}/etc/ssh/sshd_config.d/10-vps-apps.conf"
+  fi
+  exit 0
+fi
 if [ -f "$STUB_TMP/sshd_rc" ]; then exit "$(cat "$STUB_TMP/sshd_rc")"; fi
 exit 0

@@ -29,7 +29,7 @@ rc_usage() {
 # rc_load_env: read APP, VA_HOST and VA_IP from /etc/vps-apps/env as data (never sourced) into
 # VA_APP, VA_HOST and VA_IP. Exits 1 when the file is missing or a value is not valid.
 rc_load_env() {
-  local file key value octet ip_re host_re
+  local file key value
   file="$(p /etc/vps-apps/env)"
   if [ ! -r "$file" ]; then
     echo "rc: $file is missing, no app is installed on this server" >&2
@@ -43,16 +43,13 @@ rc_load_env() {
       VA_IP) VA_IP="$value" ;;
     esac
   done <"$file"
-  octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
-  ip_re="^${octet}(\\.${octet}){3}\$"
-  host_re='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
   VA_HOST="${VA_HOST,,}"
   case "$VA_APP" in docker | n8n) ;; *)
     echo "rc: $file has no valid APP" >&2
     exit 1
     ;;
   esac
-  if ! [[ "$VA_HOST" =~ $host_re && "$VA_IP" =~ $ip_re ]]; then
+  if ! valid_hostname "$VA_HOST" || ! valid_ipv4 "$VA_IP"; then
     echo "rc: $file has no valid VA_HOST and VA_IP" >&2
     exit 1
   fi

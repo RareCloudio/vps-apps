@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Login message of a vps-apps server, run by pam_motd as /etc/update-motd.d/99-vps-apps.
 # It reads the host from the env file (as data) and the install status, nothing else.
+# set -e is deliberately off: a login must never fail because of this message.
 R="${VPS_APPS_ROOT:-}"
 
 host=""

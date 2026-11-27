@@ -81,6 +81,7 @@ APP
 }
 
 @test "rc status prints the status and docker compose ps for the app" {
+  : >"$DATA/.env"
   run "$RC" status
   [ "$status" -eq 0 ]
   [[ "$output" == *"ready"* ]]
@@ -184,4 +185,86 @@ APP
   run "$MOTD_SRC"
   [[ "$output" == *"Status: unknown"* ]]
   refute_grep -q $'\e' <<<"$output"
+}
+
+@test "valid_hostname enforces labels, 63 characters per label and 253 in total" {
+  valid_hostname app.example.com
+  valid_hostname a-b.c1.example.com
+  label63="$(printf 'a%.0s' $(seq 63))"
+  label64="$(printf 'a%.0s' $(seq 64))"
+  valid_hostname "$label63.example.com"
+  run valid_hostname "$label64.example.com"
+  [ "$status" -ne 0 ]
+  long="$(printf '%s.' $(seq 1 60 | sed 's/.*/abcd/'))com"
+  [ "${#long}" -gt 253 ]
+  run valid_hostname "$long"
+  [ "$status" -ne 0 ]
+  ok="$label63.$label63.$label63.example.com"
+  [ "${#ok}" -le 253 ]
+  valid_hostname "$ok"
+  for bad in "" nodots -a.example.com a-.example.com A.example.com a..b.com "a b.example.com"; do
+    run valid_hostname "$bad"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "valid_ipv4 accepts dotted quads only" {
+  valid_ipv4 203.0.113.7
+  valid_ipv4 0.0.0.0
+  for bad in "" 1.2.3 1.2.3.4.5 256.1.1.1 1.2.3.04x a.b.c.d "1.2.3.4 "; do
+    run valid_ipv4 "$bad"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "rc domain add refuses a label over 63 characters and a name over 253" {
+  run "$RC" domain add "$(printf 'a%.0s' $(seq 64)).example.com"
+  [ "$status" -eq 2 ]
+  run "$RC" domain add "$(printf 'abcd.%.0s' $(seq 1 60))com"
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/hook.log" ]
+}
+
+@test "rc domain add refuses the server's own host name" {
+  run "$RC" domain add App.Example.com
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"already"* ]]
+  [ ! -e "$STUB_TMP/hook.log" ]
+}
+
+@test "RC_DNS_WAIT must be a number of seconds" {
+  RC_DNS_WAIT=abc run "$RC" domain add late.example.com
+  [ "$status" -eq 2 ]
+  [ ! -e "$STUB_TMP/hook.log" ]
+}
+
+@test "rc status during the install prints the status and exits 0 without compose" {
+  printf '%s' installing >"$STATE/public/.well-known/rarecloud-app-status"
+  rm -f "$DATA/.env"
+  run "$RC" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Status: installing"* ]]
+  [ ! -e "$STUB_TMP/docker.log" ]
+}
+
+@test "rc status without docker installed yet still exits 0" {
+  : >"$DATA/.env"
+  printf '%s' installing >"$STATE/public/.well-known/rarecloud-app-status"
+  run env PATH="$BATS_TEST_TMPDIR/nobin:/usr/bin:/bin" "$RC" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Status: installing"* ]]
+}
+
+@test "rc update writes neither .env when the proxy digest cannot be resolved" {
+  printf 'N8N_IMAGE=a@%s\nN8N_IMAGE_REF=app/a:1\n' "$ZEROS" >"$DATA/.env"
+  printf 'CADDY_IMAGE=c@%s\nCADDY_IMAGE_REF=lucaslorentz/caddy-docker-proxy:2.13.1-alpine\n' "$ZEROS" >"$PROXY/.env"
+  cp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  cp "$PROXY/.env" "$BATS_TEST_TMPDIR/proxy.env"
+  printf 'lucaslorentz' >"$STUB_TMP/inspect_fail_match"
+  run "$RC" update
+  [ "$status" -ne 0 ]
+  grep -qF 'buildx imagetools inspect app/a:1' "$STUB_TMP/docker.log"
+  cmp "$DATA/.env" "$BATS_TEST_TMPDIR/app.env"
+  cmp "$PROXY/.env" "$BATS_TEST_TMPDIR/proxy.env"
+  refute_grep -q ' pull$' "$STUB_TMP/docker.log"
 }

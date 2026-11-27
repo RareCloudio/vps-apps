@@ -9,27 +9,78 @@ setup() {
   DROPIN="$(p /etc/ssh/sshd_config.d/10-vps-apps.conf)"
   KEYS="$(p /root/.ssh/authorized_keys)"
   JAIL="$(p /etc/fail2ban/jail.d/vps-apps.conf)"
+  ssh-keygen -q -t ed25519 -N '' -C customer -f "$BATS_TEST_TMPDIR/k"
+  KEYLINE="$(cat "$BATS_TEST_TMPDIR/k.pub")"
+}
+
+# put_keys <content>: a safe authorized_keys (dir 700, file 600) with the given content.
+put_keys() {
+  mkdir -p "$(dirname "$KEYS")"
+  chmod 700 "$(dirname "$KEYS")"
+  printf '%s\n' "$1" >"$KEYS"
+  chmod 600 "$KEYS"
+}
+
+# password_stays_on: base_ssh keeps password login on and says why in the log.
+password_stays_on() {
+  base_ssh
+  grep -qxF 'PasswordAuthentication yes' "$DROPIN"
+  grep -qxF 'PermitRootLogin yes' "$DROPIN"
+  grep -q 'ssh: no usable key' "$(p /var/log/vps-apps-install.log)"
 }
 
 @test "a key present turns password login off" {
-  mkdir -p "$(dirname "$KEYS")"
-  printf '# a comment\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample customer\n' >"$KEYS"
+  put_keys "# a comment
+$KEYLINE"
   base_ssh
   grep -qxF 'PasswordAuthentication no' "$DROPIN"
   grep -qxF 'PermitRootLogin prohibit-password' "$DROPIN"
+  grep -qxF 'KbdInteractiveAuthentication no' "$DROPIN"
 }
 
 @test "no key keeps password login" {
   base_ssh
   grep -qxF 'PasswordAuthentication yes' "$DROPIN"
   grep -qxF 'PermitRootLogin yes' "$DROPIN"
+  refute_grep -q 'KbdInteractiveAuthentication' "$DROPIN"
 }
 
 @test "an authorized_keys file without a key line keeps password login" {
-  mkdir -p "$(dirname "$KEYS")"
-  printf '\n   \n# only a comment\n' >"$KEYS"
+  put_keys "
+   
+# only a comment"
+  password_stays_on
+}
+
+@test "an RFC4716 (PuTTY) block does not count as a key" {
+  put_keys "$(ssh-keygen -e -f "$BATS_TEST_TMPDIR/k.pub")"
+  password_stays_on
+}
+
+@test "a restricted command= line does not count as a key" {
+  put_keys "command=\"echo hi\" $KEYLINE"
+  password_stays_on
+}
+
+@test "a garbage line and a truncated key do not count as a key" {
+  put_keys "ssh-ed25519 notbase64!!
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
+  password_stays_on
+}
+
+@test "a group-writable authorized_keys or .ssh keeps password login" {
+  put_keys "$KEYLINE"
+  chmod 664 "$KEYS"
+  password_stays_on
+  put_keys "$KEYLINE"
+  chmod 775 "$(dirname "$KEYS")"
+  password_stays_on
+}
+
+@test "the sshd privilege separation directory exists before sshd -t" {
   base_ssh
-  grep -qxF 'PasswordAuthentication yes' "$DROPIN"
+  [ -d "$(p /run/sshd)" ]
+  [ "$(stat -c %a "$(p /run/sshd)")" = 755 ]
 }
 
 @test "the reload is socket-safe: sshd -t first, then try-reload-or-restart ssh" {
@@ -45,8 +96,7 @@ setup() {
   mkdir -p "$(dirname "$DROPIN")"
   printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' >"$DROPIN"
   cp "$DROPIN" "$BATS_TEST_TMPDIR/before"
-  mkdir -p "$(dirname "$KEYS")"
-  printf 'ssh-ed25519 AAAAexample customer\n' >"$KEYS"
+  put_keys "$KEYLINE"
   echo 1 >"$STUB_TMP/sshd_rc"
   run base_ssh
   [ "$status" -ne 0 ]
@@ -59,6 +109,19 @@ setup() {
   run base_ssh
   [ "$status" -ne 0 ]
   [ ! -e "$DROPIN" ]
+}
+
+@test "when sshd -T does not report the intended password setting, the drop-in is restored and nothing reloads" {
+  mkdir -p "$(dirname "$DROPIN")"
+  printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' >"$DROPIN"
+  cp "$DROPIN" "$BATS_TEST_TMPDIR/before"
+  put_keys "$KEYLINE"
+  echo 'passwordauthentication yes' >"$STUB_TMP/sshd_T_override"
+  run base_ssh
+  [ "$status" -ne 0 ]
+  cmp "$DROPIN" "$BATS_TEST_TMPDIR/before"
+  grep -qxF 'sshd -T' "$STUB_TMP/calls.log"
+  [ ! -e "$STUB_TMP/systemctl.log" ]
 }
 
 @test "the drop-in is world-readable and rewriting it is idempotent" {
