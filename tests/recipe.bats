@@ -475,3 +475,24 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
   [ "$(status_now)" = "failed:args" ]
 }
+
+@test "a missing env file is final: failed:args, password shredded, timer disabled" {
+  install_recipe
+  rm "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ "$(status_now)" = "failed:args" ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ ! -e "$STUB_TMP/curl.log" ]
+}
+
+@test "an env path that cannot be read as a file is final too" {
+  install_recipe
+  rm "$VPS_APPS_ROOT/etc/vps-apps/env"
+  mkdir "$VPS_APPS_ROOT/etc/vps-apps/env"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  [ "$(status_now)" = "failed:args" ]
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+}

@@ -149,12 +149,14 @@ if [ "$(current_status)" = ready ]; then
 fi
 
 # The env file is only trusted after it is checked: five known keys, each once, and VERSION
-# pinned to a commit.
+# pinned to a commit. A missing one is final too: a failed redirect would kill this script before
+# any attempt is counted, and the timer would run it forever.
 bad_env() {
-  echo "vps-apps-bootstrap: $1 in $ENV_FILE" >&2
+  echo "vps-apps-bootstrap: $ENV_FILE: $1" >&2
   finish_failed args
   exit 2
 }
+if [ ! -f "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then bad_env "missing or unreadable"; fi
 APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
 seen=" "
 while IFS='=' read -r key value; do
