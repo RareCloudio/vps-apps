@@ -14,6 +14,7 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+[ -n "$out" ] || exit 0
 work="$(mktemp -d)"
 mkdir "$work/vps-apps-x"
 cat >"$work/vps-apps-x/install.sh" <<SH

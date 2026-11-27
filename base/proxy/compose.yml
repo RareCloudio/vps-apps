@@ -12,6 +12,7 @@ services:
       CONTAINERS: "1"
       NETWORKS: "1"
       POST: "0"
+      INFO: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
@@ -25,7 +26,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"
     environment:
       DOCKER_HOST: tcp://socket-proxy:2375
       CADDY_INGRESS_NETWORKS: web

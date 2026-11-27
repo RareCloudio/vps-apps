@@ -14,3 +14,15 @@ log() {
   mkdir -p "$(dirname "$file")"
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$file"
 }
+
+# write_atomic <dest> <mode>: store stdin as <dest> through a temp file in the destination's own
+# directory (same filesystem) and a rename, so a reader never sees a partial file, including a
+# container reading a mounted directory. The temp file is removed if any step fails.
+write_atomic() {
+  local dest="$1" mode="$2" tmp
+  tmp="$(mktemp "$(dirname "$dest")/.tmp.XXXXXX")" || return 1
+  if ! { cat >"$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dest"; }; then
+    rm -f "$tmp"
+    return 1
+  fi
+}

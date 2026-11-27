@@ -6,6 +6,8 @@ setup() {
   . "$BATS_TEST_DIRNAME/../lib/common.sh"
   # shellcheck source=../lib/steps.sh
   . "$BATS_TEST_DIRNAME/../lib/steps.sh"
+  # shellcheck source=../lib/images.sh
+  . "$BATS_TEST_DIRNAME/../lib/images.sh"
   # shellcheck source=../base/60-proxy.sh
   . "$BATS_TEST_DIRNAME/../base/60-proxy.sh"
   VA_HOST="app.example.com"
@@ -14,11 +16,6 @@ setup() {
   CADDYFILE="$(p /etc/vps-apps/caddy/Caddyfile)"
 }
 
-# refute_grep <grep args>: fails when grep finds a match (a bare ! mid-test asserts nothing).
-refute_grep() {
-  run grep "$@"
-  [ "$status" -eq 1 ]
-}
 
 @test "the base Caddyfile has the ACME email and the status block on :80" {
   set_site_mode http-only
@@ -82,19 +79,19 @@ refute_grep() {
   grep -qF 'CONTAINERS: "1"' <<<"$block"
   grep -qF 'NETWORKS: "1"' <<<"$block"
   grep -qF 'POST: "0"' <<<"$block"
+  grep -qF 'INFO: "1"' <<<"$block"
   grep -qF '/var/run/docker.sock:/var/run/docker.sock:ro' <<<"$block"
   grep -qx '      - socket' <<<"$block"
-  run grep -qx '      - web' <<<"$block"
-  [ "$status" -eq 1 ]
+  refute_grep -qx '      - web' <<<"$block"
   sed -n '/^networks:/,$p' "$COMPOSE" | grep -qxF '    internal: true'
 }
 
 @test "caddy has no docker.sock mount and is configured for the web network" {
   local block
   block="$(sed -n '/^  caddy:/,/^volumes:/p' "$COMPOSE")"
-  run grep -qF 'docker.sock' <<<"$block"
-  [ "$status" -eq 1 ]
+  refute_grep -qF 'docker.sock' <<<"$block"
   grep -qF 'CADDY_INGRESS_NETWORKS: web' <<<"$block"
+  refute_grep -qF '443/udp' "$COMPOSE"
   grep -qF 'CADDY_DOCKER_CADDYFILE_PATH: /etc/caddy/Caddyfile' <<<"$block"
   grep -qF 'CADDY_DOCKER_POLLING_INTERVAL: 5s' <<<"$block"
   grep -qF 'caddy_data:/data' <<<"$block"
@@ -121,7 +118,7 @@ refute_grep() {
 @test "wait_for_name returns 0 once the public resolver answers with the IP" {
   printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
   wait_for_name "$VA_HOST" "$VA_IP" 2
-  grep -qxF "+short @1.1.1.1 A $VA_HOST" "$STUB_TMP/dig.log"
+  grep -qxF "+short +time=2 +tries=1 @1.1.1.1 A $VA_HOST" "$STUB_TMP/dig.log"
 }
 
 @test "wait_for_name returns 1 after the budget when the name never resolves to the IP" {
@@ -134,8 +131,7 @@ refute_grep() {
 @test "the web network is created only when missing" {
   printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
   base_proxy
-  run grep -qxF 'network create web' "$STUB_TMP/docker.log"
-  [ "$status" -eq 1 ]
+  refute_grep -qxF "network create web" "$STUB_TMP/docker.log"
   : >"$STUB_TMP/no_web_network"
   base_proxy
   grep -qxF 'network create web' "$STUB_TMP/docker.log"
@@ -155,4 +151,55 @@ refute_grep() {
   base_proxy
   cmp "$(p /var/lib/vps-apps/public/installing.html)" "$BATS_TEST_DIRNAME/../base/www/installing.html"
   cmp "$(p /var/lib/vps-apps/public/failed.html)" "$BATS_TEST_DIRNAME/../base/www/failed.html"
+}
+
+# status_block: the :80 block of the rendered Caddyfile.
+status_block() {
+  sed -n '/^:80 {$/,/^}$/p' "$CADDYFILE"
+}
+
+@test "the :80 block serves the status as text/plain in every mode" {
+  local mode block
+  for mode in http-only installing failed app; do
+    set_site_mode "$mode"
+    block="$(status_block)"
+    grep -qF 'handle /.well-known/rarecloud-app-status' <<<"$block"
+    grep -qF 'root * /srv/public' <<<"$block"
+    grep -qF 'header Content-Type text/plain' <<<"$block"
+    grep -qF 'file_server' <<<"$block"
+    refute_grep -qi 'redir' <<<"$block"
+  done
+}
+
+@test "wait_for_name stops at the wall-clock deadline even when every dig call is slow" {
+  echo 3 >"$STUB_TMP/dig_sleep"
+  local start=$SECONDS
+  run wait_for_name "$VA_HOST" "$VA_IP" 2
+  [ "$status" -eq 1 ]
+  [ $((SECONDS - start)) -le 5 ]
+  [ "$(wc -l <"$STUB_TMP/dig.log")" -le 2 ]
+}
+
+@test "a non-app mode refuses an empty host and leaves the Caddyfile alone" {
+  set_site_mode installing
+  cp "$CADDYFILE" "$BATS_TEST_TMPDIR/before"
+  VA_HOST=""
+  run set_site_mode failed
+  [ "$status" -ne 0 ]
+  cmp "$CADDYFILE" "$BATS_TEST_TMPDIR/before"
+  run set_site_mode app
+  [ "$status" -eq 0 ]
+}
+
+@test "base_proxy checks that the proxy serves the status on port 80 before it succeeds" {
+  printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
+  base_proxy
+  grep -qxF -- '-fsS --retry 15 --retry-connrefused --retry-delay 2 http://127.0.0.1/.well-known/rarecloud-app-status' "$STUB_TMP/curl.log"
+}
+
+@test "base_proxy fails when the proxy never serves" {
+  printf '%s\n' "$VA_IP" >"$STUB_TMP/dig_answer"
+  echo 7 >"$STUB_TMP/curl_rc"
+  run base_proxy
+  [ "$status" -ne 0 ]
 }
