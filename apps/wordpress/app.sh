@@ -150,9 +150,19 @@ wp_admin_email() {
   printf '%s' "${VA_ADMIN_EMAIL:-admin@$VA_HOST}"
 }
 
-# wp_log_error <what> <stderr-file>: one log line with the start of WP-CLI's error output.
+# wp_log_error <what> <stderr-file> [<password-file>]: one log line with the end of the error output
+# (WP-CLI's own message comes last, after compose's lines). The install log is world-readable, so
+# PHP stack-trace lines are dropped: PHP prints call arguments there (the image does not set
+# zend.exception_ignore_args), and the password is one of them. The exact password is masked too.
 wp_log_error() {
-  log "wordpress: $1: $(head -c 300 "$2" | tr '\n' ' ')"
+  local msg pw
+  msg="$({ grep -vE '^[[:space:]]*(PHP[[:space:]]+)?(#[0-9]+[[:space:]]|Stack trace:|thrown in )' "$2" || true; } |
+    tail -c 400 | tr '\n' ' ')"
+  if [ -n "${3:-}" ]; then
+    pw="$(cat "$3")"
+    [ -z "$pw" ] || msg="${msg//"$pw"/<password>}"
+  fi
+  log "wordpress: $1: $msg"
 }
 
 # app_create_admin <password-file>: install WordPress with WP-CLI on the loopback stack, which
@@ -176,7 +186,7 @@ app_create_admin() {
   pw="$(cat "$pwfile")"
   if ! wp_cli core install --url="https://$VA_HOST" --title="$VA_WP_TITLE" --admin_user="$VA_WP_ADMIN_USER" \
     --admin_email="$(wp_admin_email)" --skip-email --prompt=admin_password <<<"$pw" >/dev/null 2>"$err"; then
-    wp_log_error "wp core install failed" "$err"
+    wp_log_error "wp core install failed" "$err" "$pwfile"
     rm -f "$err"
     return 1
   fi
@@ -186,7 +196,7 @@ app_create_admin() {
     return 1
   fi
   if ! wp_cli eval "$WP_ADMIN_CHECK_PHP" <"$pwfile" >/dev/null 2>"$err"; then
-    wp_log_error "the admin cannot log in with the chosen password" "$err"
+    wp_log_error "the admin cannot log in with the chosen password" "$err" "$pwfile"
     rm -f "$err"
     return 1
   fi

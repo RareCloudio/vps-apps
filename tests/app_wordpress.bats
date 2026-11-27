@@ -67,7 +67,13 @@ stub_docker() {
     case "${wp[0]:-} ${wp[1]:-}" in
       "core install")
         if [ -n "${WP_INSTALL_RC:-}" ]; then
-          echo "Error: Error establishing a database connection." >&2
+          # A PHP fatal error, whose stack trace shows call arguments (the password among them).
+          line=""
+          IFS= read -r line <"$WP/stdin.$n" || true
+          printf '%s\n' "PHP Fatal error:  Uncaught Exception: boom in /var/www/html/wp-admin/includes/upgrade.php:80" \
+            "Stack trace:" "#0 /var/www/html/wp-admin/includes/upgrade.php(80): wp_create_user('admin', '${line:0:15}...', 'a@b.c')" \
+            "#1 {main}" "  thrown in /var/www/html/wp-admin/includes/upgrade.php on line 80" \
+            "PHP   #2 wp_install('$line')" "Error: Error establishing a database connection." >&2
           return "$WP_INSTALL_RC"
         fi
         if [ -e "$WP/installed" ]; then
@@ -97,7 +103,11 @@ stub_docker() {
         fi
         ;;
       "eval "*)
-        [ -z "${WP_EVAL_RC:-}" ] || return "$WP_EVAL_RC"
+        if [ -n "${WP_EVAL_RC:-}" ]; then
+          printf '%s\n' "PHP Warning:  odd in eval()'d code on line 1" "Stack trace:" \
+            "#0 wp_check_password('$(cat "$WP/stdin.$n")')" "the password itself: $(cat "$WP/stdin.$n")" >&2
+          return "$WP_EVAL_RC"
+        fi
         [ -f "$WP/admin_password" ] && cmp -s "$WP/stdin.$n" "$WP/admin_password"
         ;;
     esac
@@ -442,15 +452,27 @@ NASTY_PW=$'Ab1$"\x60\x27\\ x;&|<>(){}[]*?!#~%^=+,./:@'
   [ -z "$output" ]
 }
 
-@test "the password stays out of the log when the install fails, too" {
+@test "the password stays out of the log when the install fails, even from a PHP stack trace" {
   app_prepare
   stub_docker
   stub_curl
   printf '%s' 'Zq9UniqueSecret' >"$PWF"
   WP_INSTALL_RC=1 run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
-  refute_grep -qF 'Zq9UniqueSecret' "$(p /var/log/vps-apps-install.log)"
+  refute_grep -qF 'Zq9UniqueS' "$(p /var/log/vps-apps-install.log)"
   grep -qF 'Error establishing a database connection' "$(p /var/log/vps-apps-install.log)"
+  grep -qF 'PHP Fatal error:  Uncaught Exception: boom' "$(p /var/log/vps-apps-install.log)"
+}
+
+@test "the password stays out of the log when the login check fails, even when echoed whole" {
+  app_prepare
+  stub_docker
+  stub_curl
+  printf '%s' 'Zq9UniqueSecret' >"$PWF"
+  WP_EVAL_RC=1 run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
+  refute_grep -qF 'Zq9UniqueS' "$(p /var/log/vps-apps-install.log)"
+  grep -qF 'the password itself: <password>' "$(p /var/log/vps-apps-install.log)"
 }
 
 @test "a failing wp core install fails the step, and nothing after it runs" {
