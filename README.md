@@ -70,6 +70,8 @@ n8n is installed from its `stable` tag and runs on UTC (`GENERIC_TIMEZONE` and `
 
 Add more domains with `rc domain add <domain>`. The newest one becomes n8n's main address, used in webhook URLs and editor links, and every earlier name keeps working.
 
+On a server installed before n8n ran on UTC, schedules move from America/New_York to UTC once `rc update` recreates n8n: a workflow set to run at 09:00 then runs at 09:00 UTC. A workflow with its own time zone in its settings keeps it.
+
 `rc update` keeps n8n on the major version it runs, because n8n's database migrations only go forward. When `stable` moves to a new major version, n8n moves to the newest release of its current major instead, and `rc update` says so. If that release cannot be found, n8n keeps its current image. Moving to a new major version with `rc` is not supported yet.
 
 ## The `rc` command
@@ -91,6 +93,21 @@ On the Docker server, extra domains go on your own containers with the labels ab
 The installer runs a fixed list of steps: network (an IPv6 gateway outside the server's own prefix gets the on-link flag it needs, at install and at every boot, so IPv6 works), packages, swap, kernel settings, Docker, firewall, proxy, SSH, login message, then the app. Each finished step leaves a marker, so a second run picks up where the first one stopped.
 
 Images are pinned by digest at install. `rc update` looks each image's tag up again and moves to the digest it points to now, so the proxy stays on its pinned release tag and Postgres on version 16, while n8n follows its `stable` tag within its major version. On n8n, the database password, the encryption key and the Valkey password are generated on the server, once, and stay there. On an n8n server installed by an earlier release, `rc update` also adds the settings that release did not have to the `.env`, and keeps every value already there. n8n data and the proxy's certificates live in Docker named volumes, so back those up.
+
+## Move a server to newer code
+
+A server keeps the code it was installed with. To move it to a newer release commit, as root:
+
+```bash
+VERSION=<full commit sha>
+cd /opt/vps-apps
+curl -fsSL "https://codeload.github.com/RareCloudio/vps-apps/tar.gz/$VERSION" | tar -xz
+mv "vps-apps-$VERSION" "$VERSION"
+ln -sfn "/opt/vps-apps/$VERSION" /opt/vps-apps/current
+rc update
+```
+
+Run `rc update` in the same session, right after the link: it adds the settings the newer code needs to the app's `.env` (a pro n8n server needs them before `rc status` or `rc logs` work again), then updates the images. This moves `rc` and the app to the new code; the installer's base steps do not run again.
 
 ## Made for RareCloud
 
