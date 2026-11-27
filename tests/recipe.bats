@@ -435,3 +435,43 @@ APP=n8n' run_recipe 'Secret9A' --app docker
   [ "$status" -eq 0 ]
   grep -q -- "--ip 85.121.120.207 " "$STUB_TMP/install.log"
 }
+
+@test "a final failure asks install.sh to show the failed page; a retryable one does not" {
+  install_recipe
+  echo 1 >"$STUB_TMP/install_rc"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  refute_grep -qx -- '--site-failed' "$STUB_TMP/install.log"
+  echo 29 >"$VPS_APPS_ROOT$STATE/attempts"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ "$(tail -n 1 "$STUB_TMP/install.log")" = "--site-failed" ]
+  [ "$(grep -cx -- '--site-failed' "$STUB_TMP/install.log")" -eq 1 ]
+}
+
+@test "exit 2 and exit 3 from install.sh are final failures that show the failed page too" {
+  install_recipe
+  echo 3 >"$STUB_TMP/install_rc"
+  run bootstrap
+  [ "$status" -eq 3 ]
+  [ "$(tail -n 1 "$STUB_TMP/install.log")" = "--site-failed" ]
+}
+
+@test "a success never shows the failed page" {
+  install_recipe
+  run bootstrap
+  [ "$status" -eq 0 ]
+  refute_grep -qx -- '--site-failed' "$STUB_TMP/install.log"
+}
+
+@test "a failing --site-failed never stops the password shred or the timer disable" {
+  install_recipe
+  echo 2 >"$STUB_TMP/install_rc"
+  echo 1 >"$STUB_TMP/site_failed_rc"
+  run bootstrap
+  [ "$status" -eq 2 ]
+  grep -qx -- '--site-failed' "$STUB_TMP/install.log"
+  [ ! -e "$VPS_APPS_ROOT$pw_file" ]
+  grep -qx 'disable --now vps-apps-install.timer' "$STUB_TMP/systemctl.log"
+  [ "$(status_now)" = "failed:args" ]
+}

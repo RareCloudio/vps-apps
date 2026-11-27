@@ -92,8 +92,21 @@ finish() {
   systemctl disable --now "$TIMER" || true
 }
 
+# site_failed: best effort, the HTTPS page then says the install failed instead of "being set up"
+# forever. install.sh decides from the site mode and never touches a server in app mode. Nothing
+# here may stop finish (it shreds the password).
+site_failed() {
+  local inst="$R/opt/vps-apps/current/install.sh"
+  [ -x "$inst" ] || return 0
+  (
+    umask 022
+    timeout 60 "$inst" --site-failed
+  ) || echo "vps-apps-bootstrap: could not switch the page to failed" >&2
+}
+
 finish_failed() {
   mark_failed "$1"
+  site_failed || true
   finish
 }
 
