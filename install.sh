@@ -56,14 +56,11 @@ parse_args() {
     *) usage_error "--app must be docker or n8n" ;;
   esac
 
-  local host_re='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
   [ -n "$VA_HOST" ] || usage_error "--host is required"
-  [[ "$VA_HOST" =~ $host_re ]] || usage_error "--host is not a valid hostname"
+  valid_hostname "$VA_HOST" || usage_error "--host is not a valid hostname"
 
-  local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
-  local ip_re="^${octet}(\\.${octet}){3}\$"
   [ -n "$VA_IP" ] || usage_error "--ip is required"
-  [[ "$VA_IP" =~ $ip_re ]] || usage_error "--ip is not a valid IPv4 address"
+  valid_ipv4 "$VA_IP" || usage_error "--ip is not a valid IPv4 address"
 
   [ -n "$VA_PASSWORD_FILE" ] || usage_error "--password-file is required"
   [ -f "$VA_PASSWORD_FILE" ] || usage_error "--password-file does not exist"

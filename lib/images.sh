@@ -20,14 +20,15 @@ resolve_image_digest() {
 # points to today. App tasks write both lines at install: the IMAGE line from resolve_image_digest,
 # the REF line with the tag they resolved it from.
 
-# refresh_image_digests <env-file>: re-resolve every <NAME>_IMAGE_REF and rewrite its <NAME>_IMAGE
-# line (appended when missing). All refs are resolved first: when one fails nothing is written.
-# Other lines and the file mode are kept; the file is replaced atomically.
-refresh_image_digests() {
-  local file="$1" line key resolved mode out="" name
-  local -A refs=() seen=()
+# resolve_env_images <env-file> <out-file>: write to <out-file> the content <env-file> would have
+# with every <NAME>_IMAGE line re-resolved from its <NAME>_IMAGE_REF (the IMAGE line is appended
+# when missing). Other lines are kept. Nothing is written to <env-file>; fails when any ref cannot
+# be resolved, so a caller can resolve every file first and only then write.
+resolve_env_images() {
+  local file="$1" out="$2" line key name content=""
+  local -A refs=() digest=() seen=()
   [ -f "$file" ] || {
-    log "refresh_image_digests: $file does not exist"
+    log "resolve_env_images: $file does not exist"
     return 1
   }
   while IFS= read -r line || [ -n "$line" ]; do
@@ -35,27 +36,35 @@ refresh_image_digests() {
       refs["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
     fi
   done <"$file"
-  [ "${#refs[@]}" -gt 0 ] || return 0
-
-  local -A digest=()
   for name in "${!refs[@]}"; do
-    resolved="$(resolve_image_digest "${refs[$name]}")" || return 1
-    digest["$name"]="$resolved"
+    digest["$name"]="$(resolve_image_digest "${refs[$name]}")" || return 1
   done
-
   while IFS= read -r line || [ -n "$line" ]; do
     key="${line%%=*}"
     if [[ "$line" == *=* && -n "${digest[$key]+x}" ]]; then
-      out+="$key=${digest[$key]}"$'\n'
+      content+="$key=${digest[$key]}"$'\n'
       seen["$key"]=1
     else
-      out+="$line"$'\n'
+      content+="$line"$'\n'
     fi
   done <"$file"
   for name in "${!digest[@]}"; do
-    [ -n "${seen[$name]+x}" ] || out+="$name=${digest[$name]}"$'\n'
+    [ -n "${seen[$name]+x}" ] || content+="$name=${digest[$name]}"$'\n'
   done
+  printf '%s' "$content" >"$out"
+}
 
-  mode="$(stat -c %a "$file")"
-  printf '%s' "$out" | write_atomic "$file" "$mode"
+# apply_env_images <env-file> <resolved-file>: replace <env-file> by the resolved content, keeping
+# its mode, by rename.
+apply_env_images() {
+  write_atomic "$1" "$(stat -c %a "$1")" <"$2"
+}
+
+# refresh_image_digests <env-file>: resolve and apply one file.
+refresh_image_digests() {
+  local tmp rc=0
+  tmp="$(mktemp)"
+  resolve_env_images "$1" "$tmp" && apply_env_images "$1" "$tmp" || rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }

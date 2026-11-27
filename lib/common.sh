@@ -26,3 +26,18 @@ write_atomic() {
     return 1
   fi
 }
+
+# valid_hostname <name>: a lowercase DNS name with at least two labels, each 1 to 63 characters of
+# a-z, 0-9 and hyphen (not at either end), 253 characters in total. The one rule every entry point
+# (install.sh, rc) uses.
+valid_hostname() {
+  local name="$1"
+  local re='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+  [ "${#name}" -le 253 ] && [[ "$name" =~ $re ]]
+}
+
+# valid_ipv4 <addr>: a dotted quad with every octet 0 to 255.
+valid_ipv4() {
+  local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+  [[ "$1" =~ ^${octet}(\.${octet}){3}$ ]]
+}
