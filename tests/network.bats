@@ -346,7 +346,8 @@ def boom(lines):
 onlink.parse = boom
 sys.exit(onlink.main(["netplan-onlink.py"] + sys.argv[2:]))
 PY
-  run python3 -I "$BATS_TEST_TMPDIR/crash.py" "$ROOT_DIR/base/files/netplan-onlink.py" "$VIRT" \
+  # -B: loading the checker as a module must not leave a __pycache__ in the checkout.
+  run python3 -I -B "$BATS_TEST_TMPDIR/crash.py" "$ROOT_DIR/base/files/netplan-onlink.py" "$VIRT" \
     "$BATS_TEST_TMPDIR/out"
   [ "$status" -eq 1 ]
   [ "$output" = "netplan-onlink: ValueError" ]
