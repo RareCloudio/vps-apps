@@ -311,21 +311,25 @@ grafana_fallback_password_file() {
 }
 
 # grafana_reset_password <work-dir> <password-file>: the admin's password through Grafana's CLI in
-# the running container, from stdin. 0 when the CLI says it changed it, 2 when Grafana's password
-# policy refuses it, 1 for anything else, including the exit 0 the command gives when it cannot find
-# the admin. Its output holds no password; it goes to a work file and only its end to the log.
+# the running container, from stdin. 2 when Grafana's password policy refuses it, 1 when the CLI
+# fails otherwise, 0 when it exits 0. An exit 0 proves nothing by itself: the command returns 0 on
+# every error but the policy one, the "new password cannot be the same as the current password" of
+# a retry included, and prints its success line only when it changed the password. So only the
+# login check that follows decides. The output holds no password; it goes to a work file and only
+# its end to the log.
 grafana_reset_password() {
   local rc=0
   app_compose exec -T grafana grafana cli --homepath /usr/share/grafana admin reset-admin-password \
     --password-from-stdin <"$2" >"$1/cli" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && grep -q 'Admin password changed successfully' "$1/cli"; then
-    return 0
-  fi
   if grep -q "doesn't meet the password policy" "$1/cli"; then
     return 2
   fi
-  log "grafana: reset-admin-password failed (exit $rc): $(tail -n 3 "$1/cli" | tr '\n' ' ' | head -c 300)"
-  return 1
+  if [ "$rc" -ne 0 ]; then
+    log "grafana: reset-admin-password failed (exit $rc): $(tail -n 3 "$1/cli" | tr '\n' ' ' | head -c 300)"
+    return 1
+  fi
+  grep -q 'Admin password changed successfully' "$1/cli" ||
+    log "grafana: reset-admin-password changed nothing (the password may be in place already), the login check decides"
 }
 
 # grafana_basic_header <user> <password-file> <header-file>: an HTTP basic credential as a header

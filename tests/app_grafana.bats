@@ -49,8 +49,9 @@ digest_of() {
 #   - "docker compose ... exec -T grafana grafana cli ... admin reset-admin-password
 #     --password-from-stdin": reads one line from stdin; under 4 bytes it fails with the password
 #     policy message, else it sets the admin password and prints "Admin password changed
-#     successfully"; with G/no_admin it prints "Admin user cannot be found" and exits 0, as the real
-#     command does;
+#     successfully"; with G/no_admin it prints "Admin user cannot be found" and exits 0, and for the
+#     password the admin already has it prints nothing more and exits 0, as the real command does
+#     (pkg/cmd/grafana-cli/commands/reset_password_command.go returns nil on every other error);
 #   - "docker compose ... exec -T caddy caddy hash-password": reads up to a newline (EOF before one
 #     is an error) and prints a bcrypt-shaped hash derived from the input;
 #   - curl against Grafana (127.0.0.1:3000: /api/health, /api/user with basic auth, the signup call,
@@ -133,6 +134,12 @@ fake_reset() {
   if [ "${#pw}" -lt 4 ] || [ -e "$G/reset_reject" ]; then
     echo "Error: ✗ the new password doesn't meet the password policy criteria"
     return 1
+  fi
+  # The same password again: Grafana's user service refuses it (ErrNewPasswordSameAsOld) and the
+  # command swallows that error, so it prints nothing more and exits 0.
+  if [ "$pw" = "$(cat "$G/pw")" ]; then
+    printf 'New Password: \n\n\n'
+    return 0
   fi
   [ -e "$G/reset_ignored" ] || printf '%s' "$pw" >"$G/pw"
   printf 'New Password: \nAdmin password changed successfully ✔\n'
@@ -656,22 +663,25 @@ env_get() {
   refute_grep -qx 'docker reset' "$G/events"
 }
 
-@test "a CLI that fails, or exits 0 without changing the password, fails the step" {
+@test "a CLI that fails, or exits 0 without the password in place, fails the step" {
   app_prepare
   : >"$G/reset_fail"
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
   rm -f "$G/reset_fail"
-  # The real command exits 0 when user 1 is not an admin it can find.
+  # The real command exits 0 when user 1 is not an admin it can find: the login check stops it.
   : >"$G/no_admin"
   run app_create_admin "$PWF"
   [ "$status" -ne 0 ]
   [ "$(cat "$G/pw")" = admin ]
-  # An exit 0 without the success message is a failure even when the login would work: this run
-  # did not set the password.
+}
+
+@test "the CLI's silent exit 0 for a password the admin already has counts once the login proves it" {
+  app_prepare
   printf '%s' Secret123 >"$G/pw"
-  run app_create_admin "$PWF"
-  [ "$status" -ne 0 ]
+  app_create_admin "$PWF"
+  [ "$(grep -cx 'docker reset' "$G/events")" -eq 1 ]
+  [ "$(grep -cxF 'curl GET http://127.0.0.1:3000/api/user' "$G/events")" -eq 1 ]
 }
 
 @test "the login check stops a password that did not take" {
