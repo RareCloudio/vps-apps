@@ -1,0 +1,16 @@
+# After exposure: the caddy labels serve WordPress on the server's own name (VA_SITE_ADDRS in the app
+# .env). The default network is kept for the database; web is the proxy's network. Apache listens on
+# port 80 in the container; Caddy terminates HTTPS and sends X-Forwarded-Proto and X-Forwarded-For,
+# which the image honours (its wp-config.php and its mod_remoteip config for private networks).
+services:
+  wordpress:
+    networks:
+      - default
+      - web
+    labels:
+      caddy: ${VA_SITE_ADDRS:?VA_SITE_ADDRS is not set}
+      caddy.reverse_proxy: "{{upstreams 80}}"
+
+networks:
+  web:
+    external: true
