@@ -129,6 +129,8 @@ trap cleanup EXIT
 
 IPD="${IP//./-}"
 HOST="$IPD.sslip.io"
+# The customer email Virtualizor puts in {{username}}; it becomes the n8n owner login.
+OWNER_EMAIL="e2e-owner@$HOST"
 KNOWN_HOSTS="$TMP/known_hosts"
 JAR="$TMP/jar"
 BODY="$TMP/body"
@@ -259,6 +261,7 @@ deploy_recipe() {
   content="${content%x}"
   content="${content//'{{vps_hostname}}'/$HOST}"
   content="${content//'{{ips}}'/$IP}"
+  content="${content//'{{username}}'/$OWNER_EMAIL}"
   content="${content//'{{root_pass}}'/$PW}"
   printf '%s' "$content" >"$TMP/recipe.sh"
   content=""
@@ -420,7 +423,7 @@ n8n_req() {
 n8n_login() {
   local deadline=$((SECONDS + $2))
   while :; do
-    jq -n --arg e "admin@$HOST" --rawfile p "$(winpath "$1")" '{emailOrLdapLoginId: $e, password: $p}' >"$TMP/login.json"
+    jq -n --arg e "$OWNER_EMAIL" --rawfile p "$(winpath "$1")" '{emailOrLdapLoginId: $e, password: $p}' >"$TMP/login.json"
     n8n_req POST /rest/login "$TMP/login.json"
     rm -f "$TMP/login.json"
     case "$CODE" in

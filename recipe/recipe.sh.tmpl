@@ -20,12 +20,20 @@ APP=__APP__
 MODE=__MODE__
 VERSION=__VERSION__
 ENV_END
-printf 'VA_IP=%s\n' "$VA_IP" >>"$R/etc/vps-apps/env"
-# The host comes last. A hostname with an embedded newline makes the env file invalid,
-# and the bootstrap then ends with failed:args.
-cat >>"$R/etc/vps-apps/env" <<'VPS_APPS_HOST_END_7f3a'
+# The panel values come last. A hostname or an email with an embedded newline makes the env file
+# invalid, and the bootstrap then ends with failed:args. At provisioning the panel's username token
+# holds the customer's email, which becomes the n8n owner login (the bootstrap passes it on only
+# when it is a plain address). A panel token never goes in a comment: the panel fills those in too,
+# and a newline in the value would end the comment.
+{
+  printf 'VA_IP=%s\n' "$VA_IP"
+  cat <<'VPS_APPS_HOST_END_7f3a'
 VA_HOST={{vps_hostname}}
 VPS_APPS_HOST_END_7f3a
+  cat <<'VPS_APPS_EMAIL_END_7f3a'
+ADMIN_EMAIL={{username}}
+VPS_APPS_EMAIL_END_7f3a
+} >>"$R/etc/vps-apps/env"
 
 # The password comes from a quoted heredoc, so no character in it is interpreted.
 # The heredoc adds one trailing newline, which is removed again.
@@ -148,16 +156,16 @@ if [ "$(current_status)" = ready ]; then
   exit 0
 fi
 
-# The env file is only trusted after it is checked: five known keys, each once, and VERSION
-# pinned to a commit. A missing one is final too: a failed redirect would kill this script before
-# any attempt is counted, and the timer would run it forever.
+# The env file is only trusted after it is checked: five known keys and the optional ADMIN_EMAIL,
+# each once, and VERSION pinned to a commit. A missing file is final too: a failed redirect would
+# kill this script before any attempt is counted, and the timer would run it forever.
 bad_env() {
   echo "vps-apps-bootstrap: $ENV_FILE: $1" >&2
   finish_failed args
   exit 2
 }
 if [ ! -f "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then bad_env "missing or unreadable"; fi
-APP="" MODE="" VERSION="" VA_HOST="" VA_IP=""
+APP="" MODE="" VERSION="" VA_HOST="" VA_IP="" ADMIN_EMAIL=""
 seen=" "
 while IFS='=' read -r key value; do
   case "$seen" in *" $key "*) bad_env "repeated key $key" ;; esac
@@ -168,6 +176,7 @@ while IFS='=' read -r key value; do
     VERSION) VERSION="$value" ;;
     VA_HOST) VA_HOST="$value" ;;
     VA_IP) VA_IP="$value" ;;
+    ADMIN_EMAIL) ADMIN_EMAIL="$value" ;;
     *) bad_env "unknown line" ;;
   esac
 done <"$ENV_FILE"
@@ -176,6 +185,16 @@ case "$MODE" in "" | starter | pro) ;; *) bad_env "bad MODE" ;; esac
 [[ "$VERSION" =~ ^[0-9a-f]{40}$ ]] || bad_env "VERSION is not a 40 character commit"
 [[ "$VA_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || bad_env "VA_HOST has characters outside A-Za-z0-9.-"
 VA_HOST="${VA_HOST,,}"
+# The owner email is optional and never fatal: anything but a plain address (the rule of valid_email
+# in lib/common.sh) is dropped, and install.sh then uses admin@<host>. The value is not printed.
+ADMIN_EMAIL="${ADMIN_EMAIL,,}"
+email_re='^[a-z0-9_%+-]+(\.[a-z0-9_%+-]+)*@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+email_local="${ADMIN_EMAIL%@*}"
+if [ -n "$ADMIN_EMAIL" ] &&
+  ! { [ "${#ADMIN_EMAIL}" -le 254 ] && [ "${#email_local}" -le 64 ] && [[ "$ADMIN_EMAIL" =~ $email_re ]]; }; then
+  echo "vps-apps-bootstrap: ADMIN_EMAIL is not a plain address, the owner login will be admin@$VA_HOST" >&2
+  ADMIN_EMAIL=""
+fi
 
 if budget_spent; then
   finish_failed "$(last_reason)"
@@ -216,6 +235,7 @@ ln -sfn "$CODE" "$R/opt/vps-apps/current"
 
 args=(--app "$APP" --host "$VA_HOST" --ip "$VA_IP" --password-file "$PW_FILE")
 [ -z "$MODE" ] || args+=(--mode "$MODE")
+[ -z "$ADMIN_EMAIL" ] || args+=(--admin-email "$ADMIN_EMAIL")
 
 # Contract: install.sh runs with umask 022; every secret file it or this script writes
 # gets an explicit chmod (the password file is 0600).

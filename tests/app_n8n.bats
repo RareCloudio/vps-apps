@@ -551,3 +551,25 @@ merged_config() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"base/other/compose.yaml"* ]]
 }
+
+@test "the owner gets the email install.sh settled on (VA_ADMIN_EMAIL)" {
+  app_prepare
+  stub_curl
+  VA_ADMIN_EMAIL=owner@example.org OWNER_BODY='{"data":{"email":"owner@example.org"}}' app_create_admin "$PWF"
+  [ "$(jq -r .email "$CURL_STDIN")" = owner@example.org ]
+}
+
+@test "an owner answer for another email than VA_ADMIN_EMAIL does not count" {
+  app_prepare
+  stub_curl
+  VA_ADMIN_EMAIL=owner@example.org run app_create_admin "$PWF"
+  [ "$status" -ne 0 ]
+}
+
+@test "the generated fallback login names the owner email" {
+  app_prepare
+  stub_curl
+  printf '%s' short >"$PWF"
+  VA_ADMIN_EMAIL=owner@example.org OWNER_BODY='{"data":{"email":"owner@example.org"}}' app_create_admin "$PWF"
+  grep -qxF 'Email: owner@example.org' "$(p /root/vps-apps-credentials.txt)"
+}

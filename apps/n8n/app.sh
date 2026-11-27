@@ -136,19 +136,26 @@ n8n_wait_for_api() {
   done
 }
 
+# n8n_owner_email: the owner login install.sh settled on (VA_ADMIN_EMAIL: the customer's email, or
+# admin@<host>).
+n8n_owner_email() {
+  printf '%s' "${VA_ADMIN_EMAIL:-admin@$VA_HOST}"
+}
+
 # n8n_post_owner <password-file>: one owner setup call, the body built by jq from the file and sent
 # on stdin. Returns 0 when the owner exists afterwards (the response is the owner, or n8n says the
 # owner is already set up), 2 when n8n rejects the password, 1 for anything else. A 200 whose body
 # is not the owner (n8n's "starting up" page) is a failure, never a success.
 n8n_post_owner() {
-  local body code rc=1 msg
+  local body code rc=1 msg email
+  email="$(n8n_owner_email)"
   body="$(mktemp)"
-  code="$(jq -n --rawfile pw "$1" --arg email "admin@$VA_HOST" \
+  code="$(jq -n --rawfile pw "$1" --arg email "$email" \
     '{email: $email, firstName: "Admin", lastName: "RareCloud", password: $pw}' |
     curl -sS --max-time 30 -o "$body" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary @- \
       http://127.0.0.1:5678/rest/owner/setup)" || code=000
   case "$code" in
-    200) jq -e --arg e "admin@$VA_HOST" '.data.email == $e' "$body" >/dev/null 2>&1 && rc=0 ;;
+    200) jq -e --arg e "$email" '.data.email == $e' "$body" >/dev/null 2>&1 && rc=0 ;;
     400)
       msg="$(jq -r '.message // empty' "$body" 2>/dev/null || true)"
       case "$msg" in
@@ -175,8 +182,8 @@ n8n_fallback_password_file() {
     (
       umask 077
       mkdir -p "$(dirname "$cred")"
-      printf 'n8n owner login, generated because the password you chose does not meet n8n rules\nEmail: admin@%s\nPassword: %s\n' \
-        "$VA_HOST" "$(cat "$1")" | write_atomic "$cred" 0600
+      printf 'n8n owner login, generated because the password you chose does not meet n8n rules\nEmail: %s\nPassword: %s\n' \
+        "$(n8n_owner_email)" "$(cat "$1")" | write_atomic "$cred" 0600
     )
   fi
 }

@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # Login message of a vps-apps server, run by pam_motd as /etc/update-motd.d/99-vps-apps.
-# It reads the host from the settings install.sh records (as data; the bootstrap's env file on a
-# server installed before those existed) and the install status, nothing else.
+# It reads the app, the host and the n8n owner email from the settings install.sh records (as data;
+# the bootstrap's env file on a server installed before those existed) and the install status,
+# nothing else. Every value is printed only when it has the expected shape.
 # set -e is deliberately off: a login must never fail because of this message.
 R="${VPS_APPS_ROOT:-}"
 
-host=""
+app="" host="" email=""
 env_file="$R/etc/vps-apps/app.env"
 [ -r "$env_file" ] || env_file="$R/etc/vps-apps/env"
 if [ -r "$env_file" ]; then
   while IFS='=' read -r key value || [ -n "$key" ]; do
-    if [ "$key" = VA_HOST ]; then
-      host="$value"
-    fi
+    case "$key" in
+      APP) app="$value" ;;
+      VA_HOST) host="$value" ;;
+      ADMIN_EMAIL) email="$value" ;;
+    esac
   done <"$env_file"
 fi
 [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || host=""
+# The rule of valid_email in lib/common.sh.
+email_re='^[a-z0-9_%+-]+(\.[a-z0-9_%+-]+)*@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+if [ "$app" != n8n ] || [ "${#email}" -gt 254 ] || ! [[ "$email" =~ $email_re ]]; then
+  email=""
+fi
 
 status=""
 status_file="$R/var/lib/vps-apps/public/.well-known/rarecloud-app-status"
@@ -37,6 +45,8 @@ fi
 echo "  Status: $status"
 if [ -f "$R/root/vps-apps-credentials.txt" ]; then
   echo "  The password you set does not meet the n8n rules: the generated login is in /root/vps-apps-credentials.txt"
+elif [ -n "$email" ]; then
+  echo "  Login: $email, with the password you set when you ordered this server. 'rc status' shows the details."
 else
   echo "  Login: use the password you set when you ordered this server. 'rc status' shows the details."
 fi

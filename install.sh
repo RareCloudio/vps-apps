@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Turns a fresh Ubuntu 24.04 VPS into a Docker or n8n server.
 # Usage: install.sh --app <docker|n8n> --host <fqdn> --ip <ipv4> --password-file <path> [--mode starter|pro]
+#          [--admin-email <email>]
 #        install.sh --site-failed   (the bootstrap, after its last attempt: see site_failed)
 # Exit codes: 0 done, 1 a failed step (retryable), 2 bad arguments, 3 the wrong OS.
 set -euo pipefail
@@ -13,7 +14,8 @@ VA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage_error() {
   echo "install.sh: $1" >&2
-  echo "usage: install.sh --app <docker|n8n> --host <fqdn> --ip <ipv4> --password-file <path> [--mode starter|pro]" >&2
+  echo "usage: install.sh --app <docker|n8n> --host <fqdn> --ip <ipv4> --password-file <path> [--mode starter|pro]" \
+    "[--admin-email <email>]" >&2
   exit 2
 }
 
@@ -41,11 +43,14 @@ require_ubuntu_2404() {
   fi
 }
 
+# parse_args: the arguments into VA_APP, VA_HOST, VA_IP, VA_PASSWORD_FILE, VA_MODE and
+# VA_ADMIN_EMAIL, or exit 2. The owner email is optional and never fatal: it is lowercased, and
+# admin@<host> takes its place when it is absent or not a plain address (valid_email).
 parse_args() {
-  VA_APP="" VA_HOST="" VA_IP="" VA_PASSWORD_FILE="" VA_MODE=""
+  VA_APP="" VA_HOST="" VA_IP="" VA_PASSWORD_FILE="" VA_MODE="" VA_ADMIN_EMAIL=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --app | --host | --ip | --password-file | --mode)
+      --app | --host | --ip | --password-file | --mode | --admin-email)
         [ $# -ge 2 ] || usage_error "$1 needs a value"
         case "$1" in
           --app) VA_APP="$2" ;;
@@ -53,6 +58,7 @@ parse_args() {
           --ip) VA_IP="$2" ;;
           --password-file) VA_PASSWORD_FILE="$2" ;;
           --mode) VA_MODE="$2" ;;
+          --admin-email) VA_ADMIN_EMAIL="${2,,}" ;;
         esac
         shift 2
         ;;
@@ -82,6 +88,12 @@ parse_args() {
       *) usage_error "--mode must be starter or pro" ;;
     esac
   fi
+
+  if [ -n "$VA_ADMIN_EMAIL" ] && ! valid_email "$VA_ADMIN_EMAIL"; then
+    log "install.sh: --admin-email is not a plain address, the owner login is admin@$VA_HOST"
+    VA_ADMIN_EMAIL=""
+  fi
+  [ -n "$VA_ADMIN_EMAIL" ] || VA_ADMIN_EMAIL="admin@$VA_HOST"
 }
 
 # record_install: what rc and the login message read later, from the validated arguments.
@@ -94,8 +106,8 @@ record_install() {
   local etc code current
   etc="$(p /etc/vps-apps)"
   mkdir -p "$etc"
-  printf 'APP=%s\nMODE=%s\nVA_HOST=%s\nVA_IP=%s\n' "$VA_APP" "$VA_MODE" "$VA_HOST" "$VA_IP" |
-    write_atomic "$etc/app.env" 0644
+  printf 'APP=%s\nMODE=%s\nVA_HOST=%s\nVA_IP=%s\nADMIN_EMAIL=%s\n' \
+    "$VA_APP" "$VA_MODE" "$VA_HOST" "$VA_IP" "$VA_ADMIN_EMAIL" | write_atomic "$etc/app.env" 0644
   code="$(cd "$VA_ROOT" && pwd -P)"
   current="$(p /opt/vps-apps/current)"
   if [ "$(cd "$current" 2>/dev/null && pwd -P)" = "$code" ]; then
@@ -245,7 +257,7 @@ main() {
   record_install
   prepare_password
   # base_proxy and the app read these.
-  export VA_HOST VA_IP
+  export VA_HOST VA_IP VA_ADMIN_EMAIL
   load_code
 
   # run_step stays a plain command (errexit must apply to it), so a failed step ends the install.
