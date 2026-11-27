@@ -19,15 +19,15 @@
   <p>Docker and Docker Compose are installed, a reverse proxy serves this name over HTTPS, and the firewall is on. Log in over SSH and deploy your first container.</p>
 
   <h2>Publish an app on your domain</h2>
-  <p>Add these two labels to a service. The proxy picks them up and gets a certificate for the name.</p>
-<pre><code>caddy: app.example.com
+  <p>This page is served on the name you gave this server. Give each of your own containers a name that points to this server, and add these two labels to its service. The proxy picks them up and gets a certificate for the name.</p>
+<pre><code>caddy: myapp.example.com
 caddy.reverse_proxy: "{{upstreams 3000}}"</code></pre>
   <p>Put the service on the network <code>web</code> so the proxy can reach it:</p>
 <pre><code>services:
   app:
     image: your-image
     labels:
-      caddy: app.example.com
+      caddy: myapp.example.com
       caddy.reverse_proxy: "{{upstreams 3000}}"
     networks:
       - web
@@ -42,7 +42,7 @@ networks:
   <h2>Commands</h2>
 <pre><code>rc status
 rc logs
-rc domain add app.example.com</code></pre>
+rc port open 5432/tcp</code></pre>
 </main>
 </body>
 </html>

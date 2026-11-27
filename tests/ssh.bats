@@ -1,6 +1,13 @@
 #!/usr/bin/env bats
 load test_helper
 
+# Host keys are generated once per file and copied in by setup, so base_ssh's ssh-keygen -A has
+# nothing to generate in the other tests. The two host-key tests start without keys.
+setup_file() {
+  mkdir -p "$BATS_FILE_TMPDIR/seed/etc/ssh"
+  ssh-keygen -A -f "$BATS_FILE_TMPDIR/seed"
+}
+
 setup() {
   # shellcheck source=../lib/common.sh
   . "$BATS_TEST_DIRNAME/../lib/common.sh"
@@ -11,6 +18,13 @@ setup() {
   JAIL="$(p /etc/fail2ban/jail.d/vps-apps.conf)"
   ssh-keygen -q -t ed25519 -N '' -C customer -f "$BATS_TEST_TMPDIR/k"
   KEYLINE="$(cat "$BATS_TEST_TMPDIR/k.pub")"
+  case "$BATS_TEST_DESCRIPTION" in
+    *"host keys"*) ;;
+    *)
+      mkdir -p "$VPS_APPS_ROOT/etc/ssh"
+      cp -a "$BATS_FILE_TMPDIR/seed/etc/ssh/." "$VPS_APPS_ROOT/etc/ssh/"
+      ;;
+  esac
 }
 
 # put_keys <content>: a safe authorized_keys (dir 700, file 600) with the given content.

@@ -62,7 +62,7 @@ run_driver() {
 }
 
 @test "a readiness check that passes on a later attempt still ends as ready" {
-  run_driver EXTRA='app_ready_check() { echo ready_check >>"'"$CALLS"'"; [ "$(grep -c ^ready_check "'"$CALLS"'")" -ge 3 ]; }'
+  run_driver EXTRA='app_ready_check() { echo ready_check >>"'"$CALLS"'"; [ "$(grep -c ^ready_check "'"$CALLS"'")" -ge 2 ]; }'
   [ "$status" -eq 0 ]
   [ "$(cat "$STATUS_FILE")" = ready ]
 }
@@ -88,9 +88,61 @@ run_driver() {
 }
 
 @test "install.sh exports VA_HOST and VA_IP before the steps run" {
-  run_driver EXTRA='base_proxy() { echo "proxy $VA_HOST $VA_IP" >>"'"$CALLS"'"; }'
+  run_driver EXTRA='base_proxy() { bash -c '"'"'echo "proxy $VA_HOST $VA_IP"'"'"' >>"'"$CALLS"'"; }'
   [ "$status" -eq 0 ]
   grep -qxF 'proxy a.example.com 1.2.3.4' "$CALLS"
+}
+
+@test "a second run after failed:ready-check skips every step and ends ready" {
+  : >"$BATS_TEST_TMPDIR/check_fail"
+  run_driver
+  [ "$status" -eq 1 ]
+  [ "$(cat "$STATUS_FILE")" = failed:ready-check ]
+  rm "$BATS_TEST_TMPDIR/check_fail"
+  : >"$CALLS"
+  run_driver
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STATUS_FILE")" = ready ]
+  [ "$(grep -vc '^ready_check' "$CALLS")" -eq 0 ]
+  [ "$(grep -c '^ready_check' "$CALLS")" -eq 1 ]
+}
+
+@test "a second run after failed:firewall starts again at firewall" {
+  run_driver EXTRA='base_firewall() { echo firewall >>"'"$CALLS"'"; return 1; }'
+  [ "$status" -eq 1 ]
+  : >"$CALLS"
+  run_driver
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STATUS_FILE")" = ready ]
+  [ "$(head -n1 "$CALLS")" = firewall ]
+  refute_grep -qxE 'packages|swap|sysctl|docker' "$CALLS"
+  grep -qxF app_expose "$CALLS"
+}
+
+@test "a library that fails to load exits 1 (retryable), not 2" {
+  copy="$BATS_TEST_TMPDIR/copy"
+  mkdir -p "$copy"
+  cp -r "$ROOT_DIR/lib" "$ROOT_DIR/base" "$ROOT_DIR/apps" "$ROOT_DIR/install.sh" "$copy/"
+  echo 'return 1' >>"$copy/base/30-sysctl.sh"
+  run bash "$copy/install.sh" --app docker --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
+  [ "$status" -eq 1 ]
+  grep -q "cannot load" "$VPS_APPS_ROOT/var/log/vps-apps-install.log"
+}
+
+@test "the real load_code defines every function main calls" {
+  cat >"$BATS_TEST_TMPDIR/real.sh" <<RS
+set -euo pipefail
+. "$ROOT_DIR/install.sh"
+VA_APP=docker
+load_code
+for fn in base_packages base_swap base_sysctl base_docker base_firewall base_proxy base_ssh base_motd \\
+  app_prepare app_up_setup app_create_admin app_expose app_ready_check app_compose_files app_domain_added \\
+  step_app_create_admin wait_until_ready set_status run_step set_site_mode compose_run; do
+  declare -F "\$fn" >/dev/null || { echo "missing \$fn"; exit 1; }
+done
+RS
+  run bash "$BATS_TEST_TMPDIR/real.sh"
+  [ "$status" -eq 0 ]
 }
 
 # --- the real docker app hooks ---
@@ -98,6 +150,8 @@ run_driver() {
 load_app() {
   # shellcheck source=../lib/common.sh
   . "$ROOT_DIR/lib/common.sh"
+  # shellcheck source=../lib/compose.sh
+  . "$ROOT_DIR/lib/compose.sh"
   # shellcheck source=../lib/images.sh
   . "$ROOT_DIR/lib/images.sh"
   # shellcheck source=../base/60-proxy.sh
@@ -112,13 +166,15 @@ load_app() {
 @test "the landing page carries the promised copy" {
   page="$ROOT_DIR/apps/docker/www/index.html"
   grep -q '<title>Your Docker server is ready</title>' "$page"
-  grep -qF 'caddy: app.example.com' "$page"
+  grep -qF 'caddy: myapp.example.com' "$page"
   grep -qF 'caddy.reverse_proxy: "{{upstreams 3000}}"' "$page"
   grep -qF -- '- web' "$page"
   grep -qF 'rc port open' "$page"
   grep -qF 'rc status' "$page"
   grep -qF 'rc logs' "$page"
-  grep -qF 'rc domain add' "$page"
+  # The landing container owns the server's name; a customer container gets its own name by labels.
+  refute_grep -qF 'rc domain add' "$page"
+  refute_grep -qF 'caddy: app.example.com' "$page"
 }
 
 @test "app_prepare writes the page and an .env with a digest and its ref" {
@@ -153,25 +209,30 @@ load_app() {
   grep -q "compose -f $ROOT_DIR/apps/docker/compose.yml -f $ROOT_DIR/apps/docker/compose.expose.yml --env-file $DATA/.env up -d" "$STUB_TMP/docker.log"
 }
 
-@test "a failed start in app_expose puts the failed page back and fails" {
+@test "a failed start in app_expose takes the stack down, drops the marker and puts the failed page back" {
   load_app
   app_prepare
-  docker() { return 1; }
+  docker() { printf '%s\n' "$*" >>"$STUB_TMP/docker_calls"; return 1; }
   run app_expose
   [ "$status" -ne 0 ]
+  grep -q ' down' "$STUB_TMP/docker_calls"
+  [ ! -e "$DATA/exposed" ]
   [ "$(cat "$(p /var/lib/vps-apps/site-mode)")" = failed ]
 }
 
-@test "app_domain_added writes only valid, new domains into the label list" {
+@test "the docker app refuses rc domain add and records nothing" {
   load_app
   app_prepare
-  mkdir -p "$(p /etc/vps-apps)"
-  printf 'www.example.org\nbad domain\nevil.com, x.com\nA.Example.COM\nwww.example.org\n\nsecond.example.net\n' >"$(p /etc/vps-apps/domains)"
-  app_domain_added second.example.net
-  grep -qxF 'VA_SITE_ADDRS="a.example.com www.example.org second.example.net"' "$DATA/.env"
-  grep -Eq '^LANDING_IMAGE=caddy@sha256:' "$DATA/.env"
-  grep -qxF 'LANDING_IMAGE_REF=caddy:2-alpine' "$DATA/.env"
-  grep -q 'up -d' "$STUB_TMP/docker.log"
+  before="$(cat "$DATA/.env")"
+  : >"$STUB_TMP/docker.log"
+  run app_domain_check www.example.org
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"give a domain to your own container with the caddy labels shown on the landing page"* ]]
+  run app_domain_added www.example.org
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"give a domain to your own container with the caddy labels shown on the landing page"* ]]
+  [ "$(cat "$DATA/.env")" = "$before" ]
+  [ ! -s "$STUB_TMP/docker.log" ]
 }
 
 @test "app_ready_check needs the landing page over HTTPS on the server own name" {
@@ -180,6 +241,13 @@ load_app() {
   app_ready_check
   grep -qF -- '--resolve a.example.com:443:127.0.0.1 https://a.example.com/' "$BATS_TEST_TMPDIR/curl_args"
   curl() { printf 'something else'; }
+  run app_ready_check
+  [ "$status" -ne 0 ]
+}
+
+@test "app_ready_check fails when curl fails, even if it printed the title" {
+  load_app
+  curl() { printf 'Your Docker server is ready'; return 23; }
   run app_ready_check
   [ "$status" -ne 0 ]
 }

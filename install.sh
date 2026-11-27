@@ -78,16 +78,15 @@ parse_args() {
 # replace it with stubs.
 load_code() {
   local f
-  # shellcheck source=lib/apt.sh
-  . "$VA_ROOT/lib/apt.sh"
-  # shellcheck source=lib/images.sh
-  . "$VA_ROOT/lib/images.sh"
-  for f in "$VA_ROOT"/base/[0-9][0-9]-*.sh; do
+  for f in "$VA_ROOT/lib/apt.sh" "$VA_ROOT/lib/images.sh" "$VA_ROOT/lib/compose.sh" \
+    "$VA_ROOT"/base/[0-9][0-9]-*.sh "$VA_ROOT/apps/$VA_APP/app.sh"; do
+    # A file that cannot be loaded is a broken download, which a retry can fix: exit 1, not 2.
     # shellcheck source=/dev/null
-    . "$f"
+    if ! . "$f"; then
+      log "install.sh: cannot load $f"
+      exit 1
+    fi
   done
-  # shellcheck source=apps/docker/app.sh
-  . "$VA_ROOT/apps/$VA_APP/app.sh"
 }
 
 # app_create_admin takes the password file; run_step calls a function without arguments.
