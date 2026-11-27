@@ -91,6 +91,47 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
   password_stays_on
 }
 
+@test "a group- or world-writable /root keeps password login" {
+  put_keys "$KEYLINE"
+  chmod 775 "$(p /root)"
+  password_stays_on
+  chmod 757 "$(p /root)"
+  password_stays_on
+  chmod 755 "$(p /root)"
+  base_ssh
+  grep -qxF 'PasswordAuthentication no' "$DROPIN"
+}
+
+# key_login_off_keeps_password <sshd -T lines> <log pattern>: with a usable key in place, sshd as
+# configured would still not let root in with it alone, so password login stays on, with the reason.
+key_login_off_keeps_password() {
+  put_keys "$KEYLINE"
+  printf '%s\n' "$1" >"$STUB_TMP/sshd_T_set"
+  base_ssh
+  grep -qxF 'PasswordAuthentication yes' "$DROPIN"
+  grep -qxF 'PermitRootLogin yes' "$DROPIN"
+  grep -q "ssh: keeping password login: .*$2" "$(p /var/log/vps-apps-install.log)"
+}
+
+@test "public key login switched off in sshd keeps password login" {
+  key_login_off_keeps_password 'pubkeyauthentication no' 'public key login off'
+}
+
+@test "an AuthorizedKeysFile that does not read .ssh/authorized_keys keeps password login" {
+  key_login_off_keeps_password 'authorizedkeysfile /etc/ssh/keys/%u .ssh/authorized_keys2' 'authorized_keys'
+}
+
+@test "AuthenticationMethods that demand more than a key keep password login" {
+  key_login_off_keeps_password 'authenticationmethods publickey,password' 'publickey,password'
+}
+
+@test "an AuthorizedKeysFile given as %h/.ssh/authorized_keys counts" {
+  put_keys "$KEYLINE"
+  printf 'authorizedkeysfile %%h/.ssh/authorized_keys\n' >"$STUB_TMP/sshd_T_set"
+  base_ssh
+  grep -qxF 'PasswordAuthentication no' "$DROPIN"
+}
+
 @test "the sshd privilege separation directory exists before sshd -t" {
   base_ssh
   [ -d "$(p /run/sshd)" ]
@@ -130,7 +171,8 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample"
   printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' >"$DROPIN"
   cp "$DROPIN" "$BATS_TEST_TMPDIR/before"
   put_keys "$KEYLINE"
-  echo 'passwordauthentication yes' >"$STUB_TMP/sshd_T_override"
+  # sshd keeps reporting yes whatever the drop-in says; key login itself is stock.
+  echo 'passwordauthentication yes' >"$STUB_TMP/sshd_T_set"
   run base_ssh
   [ "$status" -ne 0 ]
   cmp "$DROPIN" "$BATS_TEST_TMPDIR/before"
