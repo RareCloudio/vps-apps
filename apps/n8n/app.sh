@@ -85,6 +85,7 @@ app_prepare() {
     [VALKEY_IMAGE]="$valkey_image" [VALKEY_IMAGE_REF]="$VA_N8N_VALKEY_IMAGE_REF"
     [POSTGRES_PASSWORD]="$(openssl rand -hex 24)"
     [N8N_ENCRYPTION_KEY]="$(openssl rand -hex 32)"
+    [VALKEY_PASSWORD]="$(openssl rand -hex 32)"
     [VA_SITE_ADDRS]="$site_addrs"
     [N8N_HOST]="$VA_HOST"
     [WEBHOOK_URL]="https://$VA_HOST/"

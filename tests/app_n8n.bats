@@ -94,6 +94,7 @@ merged_config() {
   [ "$(stat -c %a "$DATA/.env")" = 600 ]
   grep -Eq '^N8N_ENCRYPTION_KEY=[0-9a-f]{64}$' "$DATA/.env"
   grep -Eq '^POSTGRES_PASSWORD=[0-9a-f]{48}$' "$DATA/.env"
+  grep -Eq '^VALKEY_PASSWORD=[0-9a-f]{64}$' "$DATA/.env"
   cp "$DATA/.env" "$BATS_TEST_TMPDIR/first"
   app_prepare
   cmp "$DATA/.env" "$BATS_TEST_TMPDIR/first"
@@ -224,6 +225,7 @@ N8N_SECURITY_SETTINGS=(N8N_BLOCK_ENV_ACCESS_IN_NODE=true N8N_GIT_NODE_DISABLE_BA
   cfg="$(merged_config compose.yml compose.setup.yml)"
   [ "$(jq -r '.services | keys | join(",")' <<<"$cfg")" = "n8n,postgres" ]
   [ "$(jq -r '.services.n8n.environment.EXECUTIONS_MODE // "none"' <<<"$cfg")" = none ]
+  [ "$(jq -r '.services.n8n.environment.QUEUE_BULL_REDIS_PASSWORD // "none"' <<<"$cfg")" = none ]
 }
 
 @test "the setup override publishes loopback 5678 and has no caddy labels" {
@@ -253,11 +255,74 @@ N8N_SECURITY_SETTINGS=(N8N_BLOCK_ENV_ACCESS_IN_NODE=true N8N_GIT_NODE_DISABLE_BA
 @test "the owner is not managed by env and no compose file carries a password" {
   refute_grep -q 'N8N_INSTANCE_OWNER' "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl" "$APP_DIR/app.sh"
   refute_grep -qi 'bcrypt' "$APP_DIR"/compose*.yml "$APP_DIR/env.tmpl"
-  # The only password in the compose files is the database one, taken from the .env.
+  # The only passwords in the compose files are the database and Valkey ones, taken from the .env
+  # (by compose, or by the container's shell from its own environment).
   run grep -hiE 'password' "$APP_DIR"/compose.yml "$APP_DIR"/compose.pro.yml "$APP_DIR"/compose.setup.yml "$APP_DIR"/compose.expose.yml
+  [ -n "$output" ]
   while IFS= read -r line; do
-    [[ "$line" == *'${POSTGRES_PASSWORD:?'* ]]
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *'${POSTGRES_PASSWORD:?'* || "$line" == *'${VALKEY_PASSWORD:?'* || "$line" == *'$${VALKEY_PASSWORD'* ]]
   done <<<"$output"
+}
+
+@test "pro mode: Valkey requires the generated password, and n8n and the workers send it" {
+  VA_MODE=pro app_prepare
+  pw="$(sed -n 's/^VALKEY_PASSWORD=//p' "$DATA/.env")"
+  [[ "$pw" =~ ^[0-9a-f]{64}$ ]]
+  [ "$pw" != "$(sed -n 's/^N8N_ENCRYPTION_KEY=//p' "$DATA/.env")" ]
+  cfg="$(merged_config compose.yml compose.pro.yml compose.expose.yml)"
+  [ "$(jq -r '.services.valkey.environment.VALKEY_PASSWORD' <<<"$cfg")" = "$pw" ]
+  for s in n8n n8n-worker; do
+    [ "$(jq -r --arg s "$s" '.services[$s].environment.QUEUE_BULL_REDIS_PASSWORD' <<<"$cfg")" = "$pw" ]
+  done
+  # The value is in no command line: Valkey reads it from its own environment.
+  refute_grep -qF "$pw" <<<"$(jq -c '.services.valkey | [.command, .entrypoint, .healthcheck]' <<<"$cfg")"
+  # Without the key in the .env, compose refuses to start Valkey or n8n at all.
+  sed -i '/^VALKEY_PASSWORD=/d' "$DATA/.env"
+  run merged_config compose.yml compose.pro.yml compose.expose.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *VALKEY_PASSWORD* ]]
+}
+
+# valkey_cmd <cfg> <jq path>: a command string from the merged config as the container's shell
+# gets it (compose turns $$ into $).
+valkey_cmd() {
+  jq -r "$2 | gsub(\"\\\\$\\\\$\"; \"\$\")" <<<"$1"
+}
+
+@test "Valkey gets requirepass on stdin through its own entrypoint, never as an argument" {
+  VA_MODE=pro app_prepare
+  cfg="$(merged_config compose.yml compose.pro.yml compose.setup.yml)"
+  [ "$(jq -r '.services.valkey.command | length' <<<"$cfg")" = 3 ]
+  [ "$(jq -r '.services.valkey.command[0:2] | join(" ")' <<<"$cfg")" = "sh -c" ]
+  [ "$(jq -r '.services.valkey.entrypoint // "image default"' <<<"$cfg")" = "image default" ]
+  script="$(valkey_cmd "$cfg" '.services.valkey.command[2]')"$'\n'
+  bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"$STUB_TMP/valkey_argv"\ncat >"$STUB_TMP/valkey_stdin"\n' >"$bin/docker-entrypoint.sh"
+  chmod +x "$bin/docker-entrypoint.sh"
+  VALKEY_PASSWORD=s3cr3t PATH="$bin:$PATH" sh -c "$script"
+  [ "$(cat "$STUB_TMP/valkey_argv")" = "valkey-server -" ]
+  [ "$(cat "$STUB_TMP/valkey_stdin")" = "requirepass s3cr3t" ]
+  # Without a password in its environment Valkey does not start.
+  rm -f "$STUB_TMP/valkey_argv"
+  run env -u VALKEY_PASSWORD PATH="$bin:$PATH" sh -c "$script"
+  [ "$status" -ne 0 ]
+  [ ! -e "$STUB_TMP/valkey_argv" ]
+}
+
+@test "the Valkey healthcheck authenticates through REDISCLI_AUTH and needs PONG" {
+  VA_MODE=pro app_prepare
+  cfg="$(merged_config compose.yml compose.pro.yml compose.setup.yml)"
+  [ "$(jq -r '.services.valkey.healthcheck.test[0]' <<<"$cfg")" = CMD-SHELL ]
+  hc="$(valkey_cmd "$cfg" '.services.valkey.healthcheck.test[1]')"
+  bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nif [ "$REDISCLI_AUTH" = s3cr3t ] && [ "$*" = ping ]; then echo PONG; else echo "NOAUTH Authentication required."; fi\n' >"$bin/valkey-cli"
+  chmod +x "$bin/valkey-cli"
+  VALKEY_PASSWORD=s3cr3t PATH="$bin:$PATH" sh -c "$hc"
+  run env VALKEY_PASSWORD=wrong PATH="$bin:$PATH" sh -c "$hc"
+  [ "$status" -ne 0 ]
 }
 
 @test "the owner is created with the exact password bytes, through stdin" {

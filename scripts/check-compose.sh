@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export VA_SITE_ADDRS=ci.example.com
-export POSTGRES_PASSWORD=ci N8N_ENCRYPTION_KEY=ci N8N_HOST=ci.example.com
+export POSTGRES_PASSWORD=ci N8N_ENCRYPTION_KEY=ci VALKEY_PASSWORD=ci N8N_HOST=ci.example.com
 export WEBHOOK_URL=https://ci.example.com/ N8N_EDITOR_BASE_URL=https://ci.example.com
 
 checked=" "
