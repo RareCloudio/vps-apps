@@ -8,9 +8,10 @@
 # A restart from the panel writes that file again before the VM boots, so a fix made once would not
 # last. This step installs files/vps-apps-ipv6-onlink (the file fix, with files/netplan-onlink.py,
 # Python's ipaddress; netplan's own command is Python, so python3 is there wherever netplan is) and
-# a unit that runs it at every boot before networkd, runs it once now, and adds the fixed route to
-# the running system when IPv6 does not answer yet. It never fails the install: what goes wrong is
-# logged, and a netplan file is either fixed and validated or left exactly as it was.
+# a unit that runs it before every start of networkd (boot included), runs it once now, and adds
+# the fixed route to the running system when IPv6 does not answer yet. It never fails the install:
+# what goes wrong is logged, and a netplan file is either fixed and validated or left exactly as it
+# was.
 
 VA_BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The address the IPv6 checks ping (Cloudflare's resolver).
@@ -19,8 +20,8 @@ VA_ONLINK_CHECKER=/usr/local/lib/vps-apps/netplan-onlink.py
 VA_ONLINK_RUNNER=/usr/local/sbin/vps-apps-ipv6-onlink
 VA_ONLINK_UNIT=vps-apps-ipv6-onlink.service
 
-# net_install: the checker, the runner and the unit, enabled for every boot. Fails, logged, when a
-# file cannot be installed; a unit that cannot be enabled is logged only.
+# net_install: the checker, the runner and the unit, enabled to run before every start of networkd.
+# Fails, logged, when a file cannot be installed; a unit that cannot be enabled is logged only.
 net_install() {
   local unit_dir
   unit_dir="$(p /etc/systemd/system)"

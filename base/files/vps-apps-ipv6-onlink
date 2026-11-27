@@ -4,9 +4,10 @@
 # installs the route: IPv6 does not work, and the boot waits two minutes for the network.
 #
 # The vps-apps network step installs this as /usr/local/sbin/vps-apps-ipv6-onlink and runs it once
-# at install; vps-apps-ipv6-onlink.service runs it at every boot, before systemd-networkd, because a
-# restart from the Virtualizor panel rewrites the panel's netplan file before the VM boots. systemd's
-# netplan generator has already run from that file by then; this script's netplan generate writes
+# at install; vps-apps-ipv6-onlink.service runs it before every start of systemd-networkd (at boot,
+# and whenever netplan apply or a package upgrade restarts networkd), because a restart from the
+# Virtualizor panel rewrites the panel's netplan file before the VM boots. At boot, systemd's
+# netplan generator has already run from that file; this script's netplan generate writes
 # /run/systemd/network again from the fixed file, before networkd reads it.
 #
 # /usr/local/lib/vps-apps/netplan-onlink.py decides which routes need the flag and makes the change

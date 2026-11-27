@@ -20,8 +20,8 @@ setup() {
   UNIT="$VPS_APPS_ROOT/etc/systemd/system/vps-apps-ipv6-onlink.service"
 }
 
-# boot_runner: the runner alone, as its unit runs it at boot, installed from this checkout under
-# the test root, with the restricted PATH.
+# boot_runner: the runner alone, as its unit runs it before networkd starts, installed from this
+# checkout under the test root, with the restricted PATH.
 boot_runner() {
   mkdir -p "${RUNNER%/*}" "${CHECKER%/*}"
   cp "$ROOT_DIR/base/files/vps-apps-ipv6-onlink" "$RUNNER"
@@ -253,7 +253,7 @@ YAML
   [ "$status" -eq 0 ]
   untouched "$VIRT"
   [ "$(stat -c %a "$VIRT")" = 600 ]
-  # generate did see the changed file; a fix it rejected is not applied to the running system either.
+  # generate did see the changed file; a fix it rejected is not applied to the running system.
   grep -qx '          on-link: true' "$STUB_TMP/netplan.seen"
   [ ! -e "$STUB_TMP/ip.log" ]
   grep -qF "network: netplan generate rejected the change to $VIRT, the original is back: /etc/netplan/99-virt-eth0.yaml:15:10: Error in network definition: stub" "$LOG"
@@ -449,9 +449,9 @@ YAML
   grep -qF 'network: python3 is missing, the netplan files are not checked' "$LOG"
 }
 
-# --- at every boot: the panel rewrites its netplan file when the VPS is restarted from it ---
+# --- before every start of networkd, boot included: a panel restart rewrites its netplan file ---
 
-@test "the unit runs the runner once per boot, after local filesystems and before networkd" {
+@test "the unit runs the runner before every start of networkd, after local filesystems" {
   local f="$ROOT_DIR/base/files/vps-apps-ipv6-onlink.service" line
   for line in '[Unit]' 'DefaultDependencies=no' 'After=local-fs.target' \
     'Before=systemd-networkd.service network-pre.target shutdown.target' 'Wants=network-pre.target' \
@@ -505,7 +505,7 @@ YAML
   cmp "$BATS_TEST_TMPDIR/fixed" "$VIRT"
   [ ! -e "$STUB_TMP/netplan.log" ]
   [[ "$output" == *"the netplan files need no change"* ]]
-  # A panel restart writes the broken file again: the next boot fixes it again, the first backup stays.
+  # A panel restart writes the broken file again: the next boot fixes it, the first backup stays.
   cp "$BATS_TEST_TMPDIR/99-virt-eth0.yaml.before" "$VIRT"
   printf 'the first original\n' >"$BACKUP/99-virt-eth0.yaml.orig"
   boot_runner
