@@ -576,6 +576,21 @@ motd_for() {
   [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
 }
 
+@test "the motd names the Grafana login and the Loki push address, and its Loki login is not a generated one" {
+  mkdir -p "$(p /root)"
+  printf 'Loki push username: loki\nLoki push password: %s\n' "$(printf 'a%.0s' $(seq 48))" >"$(p /root/vps-apps-credentials.txt)"
+  motd_for grafana
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+  [[ "$output" == *"  Send logs to Loki: https://app.example.com/loki/api/v1/push, with the login in /root/vps-apps-credentials.txt"* ]]
+  refute_grep -q "does not meet" <<<"$output"
+  refute_grep -qF "$(printf 'a%.0s' $(seq 48))" <<<"$output"
+  printf 'Password: %s\n' "$(printf 'b%.0s' $(seq 16))" >>"$(p /root/vps-apps-credentials.txt)"
+  motd_for grafana
+  [[ "$output" == *"  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"* ]]
+  refute_grep -q "Login:" <<<"$output"
+  refute_grep -qF "$(printf 'b%.0s' $(seq 16))" <<<"$output"
+}
+
 @test "the motd points to the credentials file before any login hint, for every app" {
   local app
   mkdir -p "$(p /root)"
