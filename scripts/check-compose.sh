@@ -48,6 +48,11 @@ check $wp/compose.yml $wp/compose.expose.yml
 uk=apps/uptimekuma
 check $uk/compose.yml $uk/compose.setup.yml
 check $uk/compose.yml $uk/compose.expose.yml
+# Grafana: its secret key, root URL and the Loki push hash (single-quoted bcrypt in the real .env).
+export GRAFANA_SECRET_KEY=ci GRAFANA_ROOT_URL=https://ci.example.com/ LOKI_PUSH_HASH=ci
+gf=apps/grafana
+check $gf/compose.yml $gf/compose.setup.yml
+check $gf/compose.yml $gf/compose.expose.yml
 
 # Every compose file in the repo must be part of at least one combination above, so a new overlay
 # cannot ship unvalidated.
