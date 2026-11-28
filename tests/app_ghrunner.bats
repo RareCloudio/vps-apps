@@ -975,6 +975,29 @@ no_token_anywhere() {
   [ "$(head -c 20000 /dev/zero | tr '\0' x | runner_redact "$TOKEN" | wc -c)" -le 4001 ]
 }
 
+@test "register.sh stopped by systemd (SIGTERM) while working leaves the status failed" {
+  prepared
+  mkdir -p "$(p /etc/vps-apps)" "$BATS_TEST_TMPDIR/bin"
+  printf 'APP=ghrunner\nMODE=\nVA_HOST=%s\nVA_IP=203.0.113.9\nADMIN_EMAIL=\n' "$VA_HOST" >"$(p /etc/vps-apps/app.env)"
+  runner_write_status working "Registering with https://github.com/octo/repo." ""
+  # A flock that hangs stands in for a registration that runs into TimeoutStartSec.
+  printf '#!/bin/sh\n: >"%s/hung"\nexec sleep 30\n' "$F" >"$BATS_TEST_TMPDIR/bin/flock"
+  chmod +x "$BATS_TEST_TMPDIR/bin/flock"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" bash "$COMMON_DIR/register.sh" ghrunner 3>&- &
+  pid=$!
+  for _ in $(seq 100); do
+    [ ! -e "$F/hung" ] || break
+    sleep 0.05
+  done
+  [ -e "$F/hung" ]
+  # systemd sends SIGTERM to every process of the unit.
+  kill -TERM "$pid"
+  pkill -TERM -P "$pid" || true
+  wait "$pid" || true
+  [ "$(jq -r .state "$DATA/status/status.json")" = failed ]
+  [ "$(jq -r .message "$DATA/status/status.json")" = "The registration was interrupted. Send the form again." ]
+}
+
 @test "register.sh refuses an app that is not the installed one, or not a runner app" {
   run bash "$COMMON_DIR/register.sh" n8n
   [ "$status" -eq 2 ]
