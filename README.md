@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml/badge.svg)](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml)
 
-Turn a fresh Ubuntu 24.04 server into a properly set up app server, with HTTPS and an admin account, in minutes: a Docker server, or n8n, Nextcloud, Forgejo, WordPress or Uptime Kuma.
+Turn a fresh Ubuntu 24.04 server into a properly set up app server, with HTTPS and an admin account, in minutes: a Docker server, or n8n, Nextcloud, Forgejo, WordPress, Uptime Kuma or Grafana.
 
 You get:
 
@@ -36,10 +36,10 @@ Arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `--app` | `docker`, `n8n`, `nextcloud`, `forgejo`, `wordpress` or `uptimekuma` |
+| `--app` | `docker`, `n8n`, `nextcloud`, `forgejo`, `wordpress`, `uptimekuma` or `grafana` |
 | `--host` | A domain name for this server. Point its A record at the server. The installer waits up to five minutes for the name to resolve before it asks for a certificate. |
 | `--ip` | The server's public IPv4 address |
-| `--password-file` | Required for every app. A file with the admin password, for the app's first login: the n8n owner (your `--admin-email`), the user `admin` in Nextcloud, WordPress and Uptime Kuma, and the user `gitadmin` in Forgejo. The Docker app does not use it. Delete it once the install is ready. |
+| `--password-file` | Required for every app. A file with the admin password, for the app's first login: the n8n owner (your `--admin-email`), the user `admin` in Nextcloud, WordPress, Uptime Kuma and Grafana, and the user `gitadmin` in Forgejo. The Docker app does not use it. Delete it once the install is ready. |
 | `--mode` | n8n only: `starter` (default) or `pro` |
 | `--admin-email` | Optional. The n8n owner login, and the WordPress admin's email. Without it, or when it is not a plain address, it is `admin@<your host>`. |
 
@@ -128,6 +128,32 @@ Uptime Kuma trusts the proxy's headers, so it sees each visitor's real address, 
 Add more domains with `rc domain add <domain>`. Every name serves Uptime Kuma; a status page is shown on the names you map to it in that status page's own settings.
 
 `rc update` keeps Uptime Kuma on version 2. Moving to version 3 needs a manual migration. Back up the `vps-apps-uptimekuma_uptime_kuma_data` volume.
+
+### grafana
+
+Grafana with Loki for logs and Prometheus for metrics, plus node-exporter, so the server shows its own CPU, memory, disk and network from the start. The admin account (login `admin`, with your password) gets its password before Grafana is reachable from the internet, so Grafana's default password never works there. Nobody can sign up, and nothing shows without a login. If your password is shorter than 4 characters, is `admin` or is not printable ASCII, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+
+Grafana comes with its Prometheus and Loki data sources and a dashboard for this server, which is also its home page.
+
+Send logs from your other servers to `https://<your host>/loki/api/v1/push`, with the user `loki` and the password generated on the server, both in `/root/vps-apps-credentials.txt`. With Grafana Alloy:
+
+```alloy
+loki.write "rarecloud" {
+  endpoint {
+    url = "https://<your host>/loki/api/v1/push"
+    basic_auth {
+      username = "loki"
+      password = sys.env("LOKI_PUSH_PASSWORD")
+    }
+  }
+}
+```
+
+That push address is the only part of Loki on the internet. Loki's query API and Prometheus answer only inside the server, where Grafana reads them. Loki keeps logs for 15 days; Prometheus keeps metrics for 15 days and at most 4 GB.
+
+Add more domains with `rc domain add <domain>`. Grafana and the push address answer on every name, and the newest one becomes Grafana's main address, used in the links it writes.
+
+Grafana runs from the newest release of Grafana 13, Loki from its `3` tag, Prometheus from `v3` and node-exporter from `v1`. `rc update` moves each to the newest release of the major version it runs, and never to another major version, because their database migrations only go forward. Back up the `vps-apps-grafana_grafana_data`, `vps-apps-grafana_loki_data` and `vps-apps-grafana_prometheus_data` volumes.
 
 ## The `rc` command
 
