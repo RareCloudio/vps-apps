@@ -366,7 +366,9 @@ with_login() {
   [ "$(jq -r '.services.page.volumes[2] | "\(.source) \(.target) \(.read_only)"' <<<"$cfg")" = \
     "/opt/vps-apps-data/ghrunner/status /status true" ]
   # A missing host path fails the start instead of being made as root.
-  [ "$(jq -r '[.services.page.volumes[].bind.create_host_path] | unique | join(",")' <<<"$cfg")" = false ]
+  # Compose prints create_host_path only when it is true (false is the long-syntax default and some
+  # compose releases omit it), so a missing key counts as false: no mount may create its host path.
+  [ "$(jq -r '[.services.page.volumes[].bind.create_host_path // false] | unique | join(",")' <<<"$cfg")" = false ]
   [ "$(jq -r '[.services.page.volumes[].source | select(test("docker"))] | length' <<<"$cfg")" = 0 ]
 }
 
