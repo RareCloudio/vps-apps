@@ -101,9 +101,13 @@ FAKE_HASH='$2a$14$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0'
 #                                               token; fails like GitLab refusing the token when
 #                                               $F/register_fail exists, or prints REGISTER_OUT
 #   grep -q [[runners]] config.new.toml         on $F/candidate
-#   gitlab-runner unregister ...                "unregister" in $F/events
-#   mv -f config.new.toml config.toml           $F/candidate to $F/config
-#   rm -f config.new.toml                       removes $F/candidate
+#   gitlab-runner unregister ...                "unregister" in $F/events; with --config
+#                                               config.old.toml, the runners of $F/old in
+#                                               $F/unregistered
+#   cp -f config.toml config.old.toml           $F/config to $F/old (fails without $F/config)
+#   mv -f config.new.toml config.toml           $F/candidate to $F/config; fails when $F/mv_fail
+#                                               exists
+#   rm -f config.new.toml, config.old.toml      removes $F/candidate, $F/old
 # Every other call goes to the stub on PATH.
 stub_docker() {
   docker() {
@@ -136,8 +140,16 @@ stub_docker() {
         echo "Runner registered successfully (token $CI_SERVER_TOKEN)."
         ;;
       *" grep -q "*) grep -q '^\[\[runners\]\]' "$F/candidate" 2>/dev/null ;;
-      *" mv -f /etc/gitlab-runner/config.new.toml /etc/gitlab-runner/config.toml") mv -f "$F/candidate" "$F/config" ;;
+      *" gitlab-runner unregister --all-runners --config /etc/gitlab-runner/config.old.toml")
+        grep '^  token = ' "$F/old" >>"$F/unregistered" 2>/dev/null || true
+        ;;
+      *" cp -f /etc/gitlab-runner/config.toml /etc/gitlab-runner/config.old.toml") cp -f "$F/config" "$F/old" ;;
+      *" mv -f /etc/gitlab-runner/config.new.toml /etc/gitlab-runner/config.toml")
+        [ ! -e "$F/mv_fail" ] || return 1
+        mv -f "$F/candidate" "$F/config"
+        ;;
       *" rm -f /etc/gitlab-runner/config.new.toml") rm -f "$F/candidate" ;;
+      *" rm -f /etc/gitlab-runner/config.old.toml") rm -f "$F/old" ;;
     esac
   }
 }
@@ -306,18 +318,18 @@ request() {
   grep -qxF "$c up -d gitlab-runner" "$STUB_TMP/docker.log"
   grep -qxF "$c exec -T -e CI_SERVER_TOKEN gitlab-runner gitlab-runner register --non-interactive --config /etc/gitlab-runner/config.new.toml --url https://gitlab.example.com --description glrunner-ab12cd --executor docker --docker-image ubuntu:24.04 --docker-volumes /var/run/docker.sock:/var/run/docker.sock --docker-volumes /cache" "$STUB_TMP/docker.log"
   grep -qxF "$c kill -s SIGHUP gitlab-runner" "$STUB_TMP/docker.log"
-  # The new config: the global settings, then the runner; it replaced config.toml after the old
-  # runners were unregistered.
+  # The new config: the global settings, then the runner; it replaced config.toml. A first
+  # registration has no earlier runners to unregister.
   [ "$(head -n 1 "$F/config")" = "concurrent = 1" ]
   grep -qxF '[[runners]]' "$F/config"
   [ ! -e "$F/candidate" ]
+  [ ! -e "$F/old" ]
+  refute_grep -q '^unregister' "$F/events"
   write="$(grep -n 'umask 077' "$F/events" | cut -d: -f1)"
   reg="$(grep -n '^register ' "$F/events" | cut -d: -f1)"
-  unreg="$(grep -n '^unregister' "$F/events" | head -n 1 | cut -d: -f1)"
   mv="$(grep -n 'mv -f' "$F/events" | cut -d: -f1)"
   [ "$write" -lt "$reg" ]
-  [ "$reg" -lt "$unreg" ]
-  [ "$unreg" -lt "$mv" ]
+  [ "$reg" -lt "$mv" ]
   st="$DATA/status/status.json"
   [ "$(jq -r .state "$st")" = registered ]
   [ "$(jq -r .url "$st")" = https://gitlab.example.com ]
@@ -391,9 +403,37 @@ request() {
   runner_handle_request
   [ "$(grep -c '^\[\[runners\]\]' "$F/config")" -eq 1 ]
   grep -qF "${GLRT}ZyXwVuTsRqPoNmLkJiHgFe" "$F/config"
-  [ "$(grep -c '^unregister' "$F/events")" -eq 2 ]
-  grep -qF 'gitlab-runner unregister --all-runners --config /etc/gitlab-runner/config.toml' "$STUB_TMP/docker.log"
+  # The old runners are unregistered from a copy of the old config, and only after the new config
+  # is saved: a failure on the way never leaves the server without a runner.
+  [ "$(grep -c '^unregister' "$F/events")" -eq 1 ]
+  grep -qF 'gitlab-runner unregister --all-runners --config /etc/gitlab-runner/config.old.toml' "$STUB_TMP/docker.log"
+  [ "$(cat "$F/unregistered")" = "  token = \"$TOKEN\"" ]
+  cp_at="$(grep -n 'cp -f' "$F/events" | tail -n 1 | cut -d: -f1)"
+  mv_at="$(grep -n 'mv -f' "$F/events" | tail -n 1 | cut -d: -f1)"
+  unreg_at="$(grep -n '^unregister' "$F/events" | cut -d: -f1)"
+  [ "$cp_at" -lt "$mv_at" ]
+  [ "$mv_at" -lt "$unreg_at" ]
+  [ ! -e "$F/old" ]
   [ "$(jq -r .url "$DATA/status/status.json")" = https://gitlab.example.com ]
+}
+
+@test "a new config that cannot be saved keeps the old runner registered and unregisters nothing" {
+  app_prepare
+  request "{\"url\":\"https://gitlab.com\",\"token\":\"$TOKEN\"}"
+  runner_handle_request
+  cp "$F/config" "$BATS_TEST_TMPDIR/config.before"
+  : >"$F/mv_fail"
+  request "{\"url\":\"https://gitlab.example.com\",\"token\":\"${GLRT}ZyXwVuTsRqPoNmLkJiHgFe\"}"
+  run runner_handle_request
+  [ "$status" -ne 0 ]
+  cmp "$F/config" "$BATS_TEST_TMPDIR/config.before"
+  refute_grep -q '^unregister' "$F/events"
+  [ ! -e "$F/old" ]
+  [ ! -e "$F/candidate" ]
+  st="$DATA/status/status.json"
+  [ "$(jq -r .state "$st")" = failed ]
+  [ "$(jq -r .message "$st")" = "The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register The runner stays registered as before." ]
+  [ "$(jq -r .url "$st")" = https://gitlab.com ]
 }
 
 @test "registration and legacy or personal tokens are refused before any GitLab call" {

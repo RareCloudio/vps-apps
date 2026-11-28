@@ -30,6 +30,7 @@ VA_GLR_TAGS_URL="https://hub.docker.com/v2/repositories/gitlab/gitlab-runner/tag
 VA_GLR_JOB_IMAGE="ubuntu:24.04"
 VA_GLR_CONFIG=/etc/gitlab-runner/config.toml
 VA_GLR_CANDIDATE=/etc/gitlab-runner/config.new.toml
+VA_GLR_PREVIOUS=/etc/gitlab-runner/config.old.toml
 
 # glr_newest_release [major]: the highest X.Y.Z (of that major, when given) among the alpine-vX.Y.Z
 # tags Docker Hub lists for gitlab/gitlab-runner. Release candidates and other flavors do not count.
@@ -172,12 +173,13 @@ glr_failure() {
 # The new runner goes into a config file of its own first, with the global settings and
 # concurrent (glr_concurrent); only when GitLab verified the token does that file replace
 # config.toml, which the runner reloads (it checks every 3 seconds, and on SIGHUP). The runners of
-# the old config.toml are unregistered first, best effort: for a runner created in GitLab's UI that
-# removes this server's runner manager, not the runner, which stays in GitLab until deleted there
-# (https://docs.gitlab.com/runner/commands/). A failed attempt changes nothing: the runner keeps the
-# config.toml it had.
+# the old config.toml are unregistered only after that, from a copy taken before, best effort: for
+# a runner created in GitLab's UI that removes this server's runner manager, not the runner, which
+# stays in GitLab until deleted there (https://docs.gitlab.com/runner/commands/). A failed attempt,
+# including a new config that cannot be saved, changes nothing: the runner keeps the config.toml it
+# had and stays registered.
 runner_register() {
-  local url="$1" name out rc=0
+  local url="$1" name out rc=0 had=no
   name="$(runner_name)"
   out="$(runner_run_dir)/work/out"
   RUNNER_KEPT=yes
@@ -202,12 +204,27 @@ runner_register() {
   runner_redact "$RUNNER_TOKEN" <"$out"
   if [ "$rc" -eq 0 ] && glr_exec grep -q '^\[\[runners\]\]' "$VA_GLR_CANDIDATE" </dev/null >/dev/null 2>&1; then
     rm -f "$out"
-    glr_exec gitlab-runner unregister --all-runners --config "$VA_GLR_CONFIG" </dev/null >/dev/null 2>&1 || true
+    # A copy of the old config first; config.toml itself stays in place until the new one replaces
+    # it in one rename, and the old runners are unregistered from the copy only after that.
+    if glr_exec cp -f "$VA_GLR_CONFIG" "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1; then
+      had=yes
+    else
+      glr_exec rm -f "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
+    fi
     if ! glr_exec mv -f "$VA_GLR_CANDIDATE" "$VA_GLR_CONFIG" </dev/null; then
+      glr_exec rm -f "$VA_GLR_CANDIDATE" </dev/null >/dev/null 2>&1 || true
+      glr_exec rm -f "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
       RUNNER_RESULT="The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register"
+      if [ -n "$(runner_status_url)" ]; then
+        RUNNER_RESULT+=" The runner stays registered as before."
+      fi
       return 1
     fi
     app_compose kill -s SIGHUP gitlab-runner >/dev/null 2>&1 || true
+    if [ "$had" = yes ]; then
+      glr_exec gitlab-runner unregister --all-runners --config "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
+      glr_exec rm -f "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
+    fi
     RUNNER_RESULT="Registered with $url as $name. The runner is waiting for jobs."
     return 0
   fi
