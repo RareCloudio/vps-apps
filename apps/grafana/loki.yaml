@@ -1,0 +1,64 @@
+# Loki in single binary mode on the local filesystem, from the image's own Docker config
+# (cmd/loki/loki-docker-config.yaml in grafana/loki 3.7), with retention added. app.sh copies this
+# file to /opt/vps-apps-data/grafana/config/loki/ and compose.yml mounts that directory read-only.
+#
+# Loki itself runs without authentication (one tenant). Only its push path is reachable from the
+# internet, through Caddy with basic auth (compose.expose.yml); Grafana reads it on the internal
+# network.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# Logs are deleted after 15 days, so the disk does not fill up with old logs. Retention runs in the
+# compactor and needs the 24h index period above and a store for delete requests
+# (https://grafana.com/docs/loki/v3.7.x/operations/storage/retention/).
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+# Retention bounds logs by age only; Loki has no size-based retention. The ingestion limits bound
+# how fast logs can arrive, not how much disk they take: what is kept grows with what is sent, for
+# up to 15 days (README). A push over a limit gets HTTP 429 and the client retries
+# (https://grafana.com/docs/loki/v3.7.x/configure/#limits_config).
+limits_config:
+  retention_period: 360h
+  ingestion_rate_mb: 4
+  ingestion_burst_size_mb: 8
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 6MB
+  max_global_streams_per_user: 5000
+
+# The query results cache stays in memory, bounded for a small server.
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 64
+
+ruler:
+  alertmanager_url: http://localhost:9093

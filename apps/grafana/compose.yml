@@ -1,0 +1,118 @@
+# Grafana with Loki (logs), Prometheus (metrics) and node-exporter (this server's own metrics). The
+# secrets and image digests come from the .env under /opt/vps-apps-data/grafana (compose reads it
+# through --env-file); the image defaults only keep the file valid on its own. The config files
+# mounted below are the ones in this directory, copied to /opt/vps-apps-data/grafana/config by
+# app.sh. Reached through compose.setup.yml before exposure and compose.expose.yml after.
+#
+# node-exporter must run in the host's network namespace to see the server's own network
+# interfaces (https://github.com/prometheus/node_exporter#docker), and there it listens on the
+# host's loopback only. The host firewall drops every connection from a container to the host
+# (base/files/vps-apps.nft.tmpl accepts only loopback and the open ports), so no container can
+# scrape it. A Prometheus agent in the host's network namespace scrapes it instead and sends the
+# samples to the main Prometheus through its remote write receiver, which is published on the
+# host's loopback only. Nothing here is published on a public address; Caddy is the only way in.
+#
+# The memory limits keep one heavy query from starving the rest on the 2 GB plan. At idle the
+# processes hold about 200 MB (Grafana), 45 MB (Loki), 37 MB (Prometheus), 32 MB (the agent) and
+# 8 MB (node-exporter) of anonymous memory, measured on 13.3.2, 3.7.11, 3.16.0 and 1.13.1.
+name: vps-apps-grafana
+
+services:
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:13.3}
+    restart: unless-stopped
+    depends_on:
+      - loki
+      - prometheus
+    environment:
+      # Grafana reads GF_<SECTION>_<KEY> over its config file
+      # (https://grafana.com/docs/grafana/v13.3/setup-grafana/configure-grafana/#override-configuration-with-environment-variables).
+      # The links Grafana writes (alerts, shares) use this address; it serves every name the proxy
+      # sends it.
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?GRAFANA_ROOT_URL is not set}
+      # Grafana encrypts the data source secrets with this key; the default is a constant known to
+      # everyone.
+      GF_SECURITY_SECRET_KEY: ${GRAFANA_SECRET_KEY:?GRAFANA_SECRET_KEY is not set}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_COOKIE_SECURE: "true"
+      # Nobody signs up, nobody creates an organization, nobody looks without a login. These are
+      # Grafana's defaults, set here so a change of default cannot open them.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Grafana's own /metrics needs no login by default and nothing here scrapes it.
+      GF_METRICS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/vps-apps-dashboards/server.json
+      # Go's garbage collector works harder before the container's memory limit is reached.
+      GOMEMLIMIT: 512MiB
+    mem_limit: 640m
+    volumes:
+      # The SQLite database, plugins and sessions (https://grafana.com/docs/grafana/v13.3/setup-grafana/configure-docker/).
+      - grafana_data:/var/lib/grafana
+      - /opt/vps-apps-data/grafana/config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - /opt/vps-apps-data/grafana/config/grafana/providers:/etc/grafana/provisioning/dashboards:ro
+      - /opt/vps-apps-data/grafana/config/grafana/dashboards:/etc/grafana/vps-apps-dashboards:ro
+
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3}
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/vps-apps/loki.yaml"]
+    environment:
+      GOMEMLIMIT: 400MiB
+    mem_limit: 512m
+    volumes:
+      # The image's data path, owned by its loki user (https://grafana.com/docs/loki/v3.7.x/setup/install/docker/).
+      - loki_data:/loki
+      - /opt/vps-apps-data/grafana/config/loki:/etc/loki/vps-apps:ro
+
+  # Prometheus 3 sets GOMEMLIMIT from the container's memory limit on its own (--auto-gomemlimit).
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/vps-apps/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+    mem_limit: 384m
+    # The agent below writes here; loopback only.
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - /opt/vps-apps-data/grafana/config/prometheus:/etc/prometheus/vps-apps:ro
+
+  prometheus-agent:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3}
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - prometheus
+      - node-exporter
+    command:
+      - --agent
+      - --config.file=/etc/prometheus/vps-apps/prometheus-agent.yml
+      - --storage.agent.path=/prometheus
+      - --web.listen-address=127.0.0.1:9091
+    mem_limit: 128m
+    volumes:
+      # The write-ahead log that holds samples while the main Prometheus does not answer.
+      - prometheus_agent_data:/prometheus
+      - /opt/vps-apps-data/grafana/config/prometheus:/etc/prometheus/vps-apps:ro
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1}
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    mem_limit: 48m
+    volumes:
+      - /:/host:ro,rslave
+
+volumes:
+  grafana_data:
+  loki_data:
+  prometheus_data:
+  prometheus_agent_data:

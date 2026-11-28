@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml/badge.svg)](https://github.com/RareCloudio/vps-apps/actions/workflows/ci.yml)
 
-Turn a fresh Ubuntu 24.04 server into a properly set up app server, with HTTPS and an admin account, in minutes: a Docker server, or n8n, Nextcloud, Forgejo, WordPress or Uptime Kuma.
+Turn a fresh Ubuntu 24.04 server into a properly set up app server, with HTTPS and an admin account, in minutes: a Docker server, or n8n, Nextcloud, Forgejo, WordPress, Uptime Kuma or Grafana, or a self-hosted runner for GitHub Actions or GitLab CI.
 
 You get:
 
@@ -36,10 +36,10 @@ Arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `--app` | `docker`, `n8n`, `nextcloud`, `forgejo`, `wordpress` or `uptimekuma` |
+| `--app` | `docker`, `n8n`, `nextcloud`, `forgejo`, `wordpress`, `uptimekuma`, `grafana`, `ghrunner` or `glrunner` |
 | `--host` | A domain name for this server. Point its A record at the server. The installer waits up to five minutes for the name to resolve before it asks for a certificate. |
 | `--ip` | The server's public IPv4 address |
-| `--password-file` | Required for every app. A file with the admin password, for the app's first login: the n8n owner (your `--admin-email`), the user `admin` in Nextcloud, WordPress and Uptime Kuma, and the user `gitadmin` in Forgejo. The Docker app does not use it. Delete it once the install is ready. |
+| `--password-file` | Required for every app. A file with the admin password, for the app's first login: the n8n owner (your `--admin-email`), the user `admin` in Nextcloud, WordPress, Uptime Kuma and Grafana, the user `gitadmin` in Forgejo, and the user `admin` of the runner apps' registration page. The Docker app does not use it. Delete it once the install is ready. |
 | `--mode` | n8n only: `starter` (default) or `pro` |
 | `--admin-email` | Optional. The n8n owner login, and the WordPress admin's email. Without it, or when it is not a plain address, it is `admin@<your host>`. |
 
@@ -128,6 +128,56 @@ Uptime Kuma trusts the proxy's headers, so it sees each visitor's real address, 
 Add more domains with `rc domain add <domain>`. Every name serves Uptime Kuma; a status page is shown on the names you map to it in that status page's own settings.
 
 `rc update` keeps Uptime Kuma on version 2. Moving to version 3 needs a manual migration. Back up the `vps-apps-uptimekuma_uptime_kuma_data` volume.
+
+### grafana
+
+Grafana with Loki for logs and Prometheus for metrics, plus node-exporter, so the server shows its own CPU, memory, disk and network from the start. The admin account (login `admin`, with your password) gets its password before Grafana is reachable from the internet, so Grafana's default password never works there. Nobody can sign up, and nothing shows without a login. If your password is shorter than 4 characters, is `admin` or is not printable ASCII, a strong one is generated and saved to `/root/vps-apps-credentials.txt`.
+
+Grafana comes with its Prometheus and Loki data sources and a dashboard for this server, which is also its home page.
+
+Send logs from your other servers to `https://<your host>/loki/api/v1/push`, with the user `loki` and the password generated on the server, both in `/root/vps-apps-credentials.txt`. With Grafana Alloy:
+
+```alloy
+loki.write "rarecloud" {
+  endpoint {
+    url = "https://<your host>/loki/api/v1/push"
+    basic_auth {
+      username = "loki"
+      password = sys.env("LOKI_PUSH_PASSWORD")
+    }
+  }
+}
+```
+
+That push address is the only part of Loki on the internet. Loki's query API and Prometheus answer only inside the server, where Grafana reads them. Loki keeps logs for 15 days, so the disk it uses grows with how much you send; it accepts up to 4 MB of logs per second, and a client that sends faster is told to slow down. Prometheus keeps metrics for 15 days and at most 4 GB.
+
+Add more domains with `rc domain add <domain>`. Grafana and the push address answer on every name, and the newest one becomes Grafana's main address, used in the links it writes.
+
+Grafana runs from the newest release of Grafana 13, Loki from its `3` tag, Prometheus from `v3` and node-exporter from `v1`. `rc update` moves each to the newest release of the major version it runs, and never to another major version, because their database migrations only go forward. Back up the `vps-apps-grafana_grafana_data`, `vps-apps-grafana_loki_data` and `vps-apps-grafana_prometheus_data` volumes.
+
+### ghrunner
+
+A GitHub Actions self-hosted runner. The runner is GitHub's own `actions/runner`, from its newest release, checked against the SHA-256 GitHub publishes for it, and runs on the server itself as the user `ghrunner`, which can use the server's Docker. Jobs that use `container:` and `services:` work as GitHub documents them.
+
+An order cannot carry a GitHub token, so the runner is installed unregistered, and you register it from the page at `https://<your host>/`. The page asks for a login (user `admin`, with your password) before it shows anything. If your password is not 1 to 72 printable ASCII characters, a strong one is generated and saved to `/root/vps-apps-credentials.txt`. On the page, paste your repository or organization address and the registration token from GitHub (your repository's **Settings** > **Actions** > **Runners** > **New self-hosted runner**, the value after `--token`; it is valid for one hour). The server registers the runner and starts it, and the page shows the outcome. In your workflows, use `runs-on: self-hosted`.
+
+The runner stays registered between jobs. Registering again from the page replaces it; when the new registration fails, the earlier one stays in place.
+
+Jobs run as `ghrunner` and can use Docker, which gives them full control of the server, and files one job leaves behind are there for the next. Register the runner only with repositories whose workflows you trust. GitHub advises against self-hosted runners on public repositories, where a pull request from a fork could run code on the server.
+
+The runner updates itself, as GitHub requires. `rc update` refreshes the page only. `rc logs` shows the page; the runner's own log is `journalctl -u vps-apps-ghrunner`, and each registration's is `journalctl -u vps-apps-ghrunner-register`. Add more domains with `rc domain add <domain>`: the page answers on every name, behind the same login.
+
+### glrunner
+
+GitLab Runner with the Docker executor, from GitLab's official image. Every job runs in its own container (`ubuntu:24.04` when your `.gitlab-ci.yml` names no image), and jobs can use the server's Docker, so they can build and run images. Jobs run side by side: one for every 2 GB of memory, at most one per CPU.
+
+An order cannot carry a GitLab token, so the runner is installed unregistered, and you register it from the page at `https://<your host>/`. The page asks for a login (user `admin`, with your password) before it shows anything. If your password is not 1 to 72 printable ASCII characters, a strong one is generated and saved to `/root/vps-apps-credentials.txt`. In GitLab, create a runner (your project's **Settings** > **CI/CD** > **Runners** > **Create project runner**) and copy its runner authentication token, which starts with `glrt-`. On the page, paste your GitLab address (`https://gitlab.com` for GitLab.com, or your own GitLab) and the token. The server registers the runner, and the page shows the outcome. Registration tokens, which GitLab no longer uses by default, are not accepted.
+
+Registering again from the page replaces this server's runner; when the new registration fails, the runner keeps the one it had.
+
+Jobs can use Docker, which gives them full control of the server. Register the runner only with projects whose pipelines you trust.
+
+GitLab Runner runs from the newest release at install, pinned to that version. `rc update` moves it to the newest release of the same major version, never to the next one, whose changed defaults need a look first. `rc logs gitlab-runner` shows the runner's log, and each registration's is `journalctl -u vps-apps-glrunner-register`. Add more domains with `rc domain add <domain>`: the page answers on every name, behind the same login. Back up the `vps-apps-glrunner_gitlab_runner_config` volume, which holds the runner's registration.
 
 ## The `rc` command
 
