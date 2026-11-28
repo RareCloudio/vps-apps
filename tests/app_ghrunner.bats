@@ -400,7 +400,7 @@ with_login() {
   prepared
   printf '%s' 'P@ss"w\0rd $x`y;1A' >"$PWF"
   app_create_admin "$PWF"
-  grep -qxF "run --rm -i --network none --entrypoint caddy $CADDY_IMAGE hash-password --algorithm bcrypt" "$STUB_TMP/docker.log"
+  grep -qxF "run --rm -i --network none --entrypoint caddy $CADDY_IMAGE hash-password --algorithm bcrypt --bcrypt-cost 10" "$STUB_TMP/docker.log"
   { cat "$PWF"; printf '\n'; } >"$BATS_TEST_TMPDIR/want"
   cmp "$F/hash_stdin" "$BATS_TEST_TMPDIR/want"
   grep -qxF "RUNNER_PAGE_AUTH_HASH='$FAKE_HASH'" "$DATA/.env"

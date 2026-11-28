@@ -250,6 +250,10 @@ VA_RUNNER_HASH_RE='^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$'
 # with one newline after it: without a terminal, hash-password reads one line and drops that newline
 # (cmdHashPassword in modules/caddyhttp/caddyauth/command.go, Caddy 2.11.4, the version in
 # caddy-docker-proxy 2.13.1; https://caddyserver.com/docs/command-line#caddy-hash-password).
+# Cost 10, as for Grafana's push credential: Caddy checks every login attempt, and its default cost
+# of 14 lets anyone without the password keep a CPU busy with wrong guesses. The order password's
+# length and character rule is what keeps online guessing impractical.
+VA_RUNNER_BCRYPT_COST=10
 runner_hash_password() {
   local img out
   img="$(runner_caddy_image)" || {
@@ -259,7 +263,8 @@ runner_hash_password() {
   out="$({
     cat "$1"
     printf '\n'
-  } | docker run --rm -i --network none --entrypoint caddy "$img" hash-password --algorithm bcrypt)" || return 1
+  } | docker run --rm -i --network none --entrypoint caddy "$img" hash-password --algorithm bcrypt \
+    --bcrypt-cost "$VA_RUNNER_BCRYPT_COST")" || return 1
   out="${out//[[:space:]]/}"
   [[ "$out" =~ $VA_RUNNER_HASH_RE ]] || return 1
   printf '%s\n' "$out"
