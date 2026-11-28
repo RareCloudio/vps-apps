@@ -570,6 +570,17 @@ env_get() {
   grep -qF '"-config.file=/etc/loki/vps-apps/loki.yaml"' "$APP_DIR/compose.yml"
 }
 
+@test "Loki's ingestion limits keep one customer's servers from filling a small disk" {
+  # Each key once, in limits_config, with the value sized for a small VPS.
+  limits="$(sed -n '/^limits_config:$/,/^[^ ]/p' "$APP_DIR/loki.yaml")"
+  for want in '  ingestion_rate_mb: 4' '  ingestion_burst_size_mb: 8' '  per_stream_rate_limit: 3MB' \
+    '  per_stream_rate_limit_burst: 6MB' '  max_global_streams_per_user: 5000' '  retention_period: 360h'; do
+    [ "$(grep -cxF "$want" <<<"$limits")" -eq 1 ]
+    key="${want#  }"
+    [ "$(grep -c "^  ${key%%:*}:" "$APP_DIR/loki.yaml")" -eq 1 ]
+  done
+}
+
 @test "Prometheus keeps 15 days and at most 4 GB, scrapes itself, and the agent sends node-exporter's metrics to it" {
   grep -qxF '      time: 15d' "$APP_DIR/prometheus.yml"
   grep -qxF '      size: 4GB' "$APP_DIR/prometheus.yml"

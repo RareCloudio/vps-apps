@@ -149,7 +149,7 @@ loki.write "rarecloud" {
 }
 ```
 
-That push address is the only part of Loki on the internet. Loki's query API and Prometheus answer only inside the server, where Grafana reads them. Loki keeps logs for 15 days; Prometheus keeps metrics for 15 days and at most 4 GB.
+That push address is the only part of Loki on the internet. Loki's query API and Prometheus answer only inside the server, where Grafana reads them. Loki keeps logs for 15 days, so the disk it uses grows with how much you send; it accepts up to 4 MB of logs per second, and a client that sends faster is told to slow down. Prometheus keeps metrics for 15 days and at most 4 GB.
 
 Add more domains with `rc domain add <domain>`. Grafana and the push address answer on every name, and the newest one becomes Grafana's main address, used in the links it writes.
 
