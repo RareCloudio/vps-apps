@@ -53,6 +53,13 @@ export GRAFANA_SECRET_KEY=ci GRAFANA_ROOT_URL=https://ci.example.com/ LOKI_PUSH_
 gf=apps/grafana
 check $gf/compose.yml $gf/compose.setup.yml
 check $gf/compose.yml $gf/compose.expose.yml
+# The CI runner apps have no setup overlay: before exposure the stack is compose.yml alone. They need
+# the page's user and group and the login hash (single-quoted bcrypt in the real .env).
+export PAGE_UID=999 PAGE_GID=999 RUNNER_PAGE_AUTH_HASH=ci
+for rn in apps/ghrunner apps/glrunner; do
+  check "$rn/compose.yml"
+  check "$rn/compose.yml" "$rn/compose.expose.yml"
+done
 
 # Every compose file in the repo must be part of at least one combination above, so a new overlay
 # cannot ship unvalidated.
