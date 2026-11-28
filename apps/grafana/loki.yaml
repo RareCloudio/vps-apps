@@ -41,8 +41,8 @@ compactor:
   delete_request_store: filesystem
 
 # Retention bounds logs by age only; Loki has no size-based retention. The ingestion limits bound
-# how fast logs can arrive, so the servers of one customer (or a leaked push password) cannot fill
-# a small disk before retention runs. A push over a limit gets HTTP 429 and the client retries
+# how fast logs can arrive, not how much disk they take: what is kept grows with what is sent, for
+# up to 15 days (README). A push over a limit gets HTTP 429 and the client retries
 # (https://grafana.com/docs/loki/v3.7.x/configure/#limits_config).
 limits_config:
   retention_period: 360h

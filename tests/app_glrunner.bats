@@ -432,7 +432,7 @@ request() {
   [ ! -e "$F/candidate" ]
   st="$DATA/status/status.json"
   [ "$(jq -r .state "$st")" = failed ]
-  [ "$(jq -r .message "$st")" = "The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register The runner stays registered as before." ]
+  [ "$(jq -r .message "$st")" = "The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register. The runner stays registered as before." ]
   [ "$(jq -r .url "$st")" = https://gitlab.com ]
 }
 

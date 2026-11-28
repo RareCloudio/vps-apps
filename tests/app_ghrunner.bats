@@ -1301,6 +1301,7 @@ page_post() {
   [ "$(page_post --data-urlencode "csrf=$csrf" --data-urlencode "url=$big" --data-urlencode "token=$TOKEN")" = 413 ]
   [ "$(page_post -H 'Content-Type: application/json' --data "{\"csrf\":\"$csrf\"}")" = 415 ]
   [ "$(page_post -H 'Transfer-Encoding: chunked' --data-urlencode "csrf=$csrf")" = 411 ]
+  [ "$(page_post --data 'a=1&a')" = 400 ]
   # A length that is a Unicode digit (byte 0xB2, a superscript two in Latin-1) is no length.
   exec 9<>"/dev/tcp/127.0.0.1/${PAGE_URL##*:}"
   printf 'POST / HTTP/1.1\r\nHost: runner.example.com\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: \xb2\r\n\r\n' >&9

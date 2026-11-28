@@ -214,7 +214,7 @@ runner_register() {
     if ! glr_exec mv -f "$VA_GLR_CANDIDATE" "$VA_GLR_CONFIG" </dev/null; then
       glr_exec rm -f "$VA_GLR_CANDIDATE" </dev/null >/dev/null 2>&1 || true
       glr_exec rm -f "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
-      RUNNER_RESULT="The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register"
+      RUNNER_RESULT="The new registration could not be saved. Details: journalctl -u vps-apps-glrunner-register."
       if [ -n "$(runner_status_url)" ]; then
         RUNNER_RESULT+=" The runner stays registered as before."
       fi
@@ -222,7 +222,9 @@ runner_register() {
     fi
     app_compose kill -s SIGHUP gitlab-runner >/dev/null 2>&1 || true
     if [ "$had" = yes ]; then
-      glr_exec gitlab-runner unregister --all-runners --config "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
+      # Best effort, and bounded: a GitLab that accepts connections but never answers must not hold
+      # the register unit past its own timeout while config.toml already runs the new runner.
+      glr_exec timeout 60 gitlab-runner unregister --all-runners --config "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
       glr_exec rm -f "$VA_GLR_PREVIOUS" </dev/null >/dev/null 2>&1 || true
     fi
     RUNNER_RESULT="Registered with $url as $name. The runner is waiting for jobs."
