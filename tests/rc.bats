@@ -599,11 +599,35 @@ motd_for() {
   refute_grep -qF "$(printf 'b%.0s' $(seq 16))" <<<"$output"
 }
 
+@test "the motd names the runner page login and where to register, for each runner app" {
+  motd_for ghrunner
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+  [[ "$output" == *"  Register the runner: https://app.example.com/, with a runner registration token from GitHub."* ]]
+  refute_grep -qF 'owner@example.org' <<<"$output"
+  motd_for glrunner
+  [[ "$output" == *"  Login: admin, with the password you set when you ordered this server."* ]]
+  [[ "$output" == *"  Register the runner: https://app.example.com/, with a runner authentication token (glrt-) from GitLab."* ]]
+  refute_grep -q 'GitHub' <<<"$output"
+}
+
+@test "the motd keeps the runner's register line when the page login is a generated one" {
+  local app
+  mkdir -p "$(p /root)"
+  printf 'Username: admin\nPassword: %s\n' "$(printf 'c%.0s' $(seq 35))" >"$(p /root/vps-apps-credentials.txt)"
+  for app in ghrunner glrunner; do
+    motd_for "$app"
+    [[ "$output" == *"  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"* ]]
+    [[ "$output" == *"  Register the runner: https://app.example.com/, with a"* ]]
+    refute_grep -q 'Login:' <<<"$output"
+    refute_grep -qF "$(printf 'c%.0s' $(seq 35))" <<<"$output"
+  done
+}
+
 @test "the motd points to the credentials file before any login hint, for every app" {
   local app
   mkdir -p "$(p /root)"
   : >"$(p /root/vps-apps-credentials.txt)"
-  for app in n8n nextcloud forgejo wordpress uptimekuma; do
+  for app in n8n nextcloud forgejo wordpress uptimekuma ghrunner glrunner; do
     motd_for "$app"
     [[ "$output" == *"  The password you set does not meet the app's password rules: the generated login is in /root/vps-apps-credentials.txt"* ]]
     refute_grep -q 'Login:' <<<"$output"

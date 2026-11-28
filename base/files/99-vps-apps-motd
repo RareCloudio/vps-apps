@@ -64,7 +64,16 @@ elif [ "$app" = wordpress ] && [ -n "$host" ]; then
   echo "  Login: https://$host/wp-admin/ as admin, with the password you set when you ordered this server."
 elif [ "$app" = forgejo ]; then
   echo "  Login: gitadmin, with the password you set when you ordered this server. Git over SSH: port 2222."
+elif [ "$app" = ghrunner ] || [ "$app" = glrunner ]; then
+  echo "  Login: admin, with the password you set when you ordered this server."
 else
   echo "  Login: use the password you set when you ordered this server. 'rc status' shows the details."
+fi
+# The runner apps install their runner unregistered: the page on the server's name registers it, with
+# whichever login the lines above name.
+if [ "$app" = ghrunner ] && [ -n "$host" ]; then
+  echo "  Register the runner: https://$host/, with a runner registration token from GitHub."
+elif [ "$app" = glrunner ] && [ -n "$host" ]; then
+  echo "  Register the runner: https://$host/, with a runner authentication token (glrt-) from GitLab."
 fi
 echo
