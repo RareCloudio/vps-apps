@@ -364,7 +364,8 @@ class Page(http.server.BaseHTTPRequestHandler):
     def content_length(self):
         """The declared body length, None when there is none or it is not a plain number."""
         length = self.headers.get("Content-Length")
-        if length is None or self.headers.get("Transfer-Encoding") or not length.isdigit():
+        # isascii too: isdigit takes Unicode digits ("²"), which int() then refuses.
+        if length is None or self.headers.get("Transfer-Encoding") or not (length.isascii() and length.isdigit()):
             return None
         return int(length)
 
