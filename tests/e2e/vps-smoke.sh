@@ -4,7 +4,7 @@
 #
 # Usage:
 #   tests/e2e/vps-smoke.sh --ssh-key <path> --ip <ipv4>
-#     --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro] \
+#     --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro] \
 #     --version <sha40> --password-file <file> [--checks 1,2,3] [--expect-pw-auth yes|no|auto]
 #
 # One PASS or FAIL line per check, in the form `PASS <n> <name>` or `FAIL <n> <name>: <reason>`.
@@ -23,7 +23,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 usage() {
   cat >&2 <<'USAGE'
 usage: vps-smoke.sh --ssh-key <path> --ip <ipv4>
-                    --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro]
+                    --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro]
                     --version <sha40> --password-file <file> [--checks 1,2,3,...]
                     [--expect-pw-auth yes|no|auto] [--probe-host <ipv4>]
 checks:
@@ -44,10 +44,11 @@ checks:
   15 forgejo        API login as gitadmin, sign-up closed, git SSH on 2222 (forgejo only)
   16 wordpress      wp-login.php as admin, installer closed, registration off, xmlrpc.php 403 (wordpress only)
   17 uptimekuma     setup no longer offered, admin logs in through the proxy (uptimekuma only)
+  18 grafana        admin login, signup off, data sources, node metrics, Loki push only with its credential
 Default checks: docker 1 2 3 5 7 8 9 10 11 12 13; n8n 1 2 3 4 7 8 9 10 11 12 13; nextcloud,
-forgejo, wordpress and uptimekuma 1 2 3, their own check (14 to 17), then 7 8 9 10 11 12 13.
+forgejo, wordpress, uptimekuma and grafana 1 2 3, their own check (14 to 18), then 7 8 9 10 11 12 13.
 Check 6 is never a default (it installs by itself, so it cannot follow check 1). Selected checks
-run in this order: 1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11.
+run in this order: 1 6 2 3 4 5 14 15 16 17 18 7 8 10 12 13 9 11.
 USAGE
   exit 2
 }
@@ -77,8 +78,8 @@ done
 octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 [[ "$IP" =~ ^${octet}(\.${octet}){3}$ ]] || { echo "vps-smoke: --ip must be an IPv4 address" >&2; usage; }
 case "$APP" in
-  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma) ;;
-  *) echo "vps-smoke: --app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma" >&2; usage ;;
+  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma | grafana) ;;
+  *) echo "vps-smoke: --app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana" >&2; usage ;;
 esac
 case "$MODE" in
   "") ;;
@@ -94,7 +95,7 @@ if [ -n "$PROBE" ]; then
 fi
 case "$EXPECT_PW" in yes | no | auto) ;; *) echo "vps-smoke: --expect-pw-auth must be yes, no or auto" >&2; usage ;; esac
 
-ORDER=(1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11)
+ORDER=(1 6 2 3 4 5 14 15 16 17 18 7 8 10 12 13 9 11)
 if [ -z "$CHECKS" ]; then
   case "$APP" in
     docker) CHECKS="1,2,3,5,7,8,9,10,11,12,13" ;;
@@ -103,12 +104,13 @@ if [ -z "$CHECKS" ]; then
     forgejo) CHECKS="1,2,3,15,7,8,9,10,11,12,13" ;;
     wordpress) CHECKS="1,2,3,16,7,8,9,10,11,12,13" ;;
     uptimekuma) CHECKS="1,2,3,17,7,8,9,10,11,12,13" ;;
+    grafana) CHECKS="1,2,3,18,7,8,9,10,11,12,13" ;;
   esac
 fi
 SELECTED=" "
 IFS=',' read -r -a _picked <<<"$CHECKS"
 for n in "${_picked[@]}"; do
-  [[ "$n" =~ ^([1-9]|1[0-7])$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 17" >&2; usage; }
+  [[ "$n" =~ ^([1-9]|1[0-8])$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 18" >&2; usage; }
   SELECTED="$SELECTED$n "
 done
 if [[ "$SELECTED" == *" 1 "* && "$SELECTED" == *" 6 "* ]]; then
@@ -282,6 +284,7 @@ app_health_path() {
     forgejo) echo /api/healthz ;;
     wordpress) echo '/?rest_route=/' ;;
     uptimekuma) echo /api/entry-page ;;
+    grafana) echo /api/health ;;
   esac
 }
 
@@ -296,6 +299,7 @@ app_health_ok() {
     forgejo) jq -e '.status == "pass"' <<<"$out" ;;
     wordpress) jq -e --arg h "https://$HOST" '.home == $h' <<<"$out" ;;
     uptimekuma) jq -e '.type == "entryPage"' <<<"$out" ;;
+    grafana) jq -e '.database == "ok"' <<<"$out" ;;
     *) false ;;
   esac >/dev/null 2>&1
 }
@@ -933,10 +937,11 @@ EOF
   rm -f "$body"
 }
 
-# check_7_app_domain <domain>: check 7 for Nextcloud, Forgejo and Uptime Kuma. The new name serves
-# the app, the .env and the recreated container's caddy label list both names, the app's own
-# settings follow the newest name (Forgejo's URL variables, Nextcloud's overwrite.cli.url and
-# trusted_domains), and the server's own name keeps serving.
+# check_7_app_domain <domain>: check 7 for Nextcloud, Forgejo, Uptime Kuma and Grafana. The new name
+# serves the app, the .env and the recreated container's caddy label list both names (Grafana's
+# Loki container too), the app's own settings follow the newest name (Forgejo's URL variables,
+# Grafana's root URL, Nextcloud's overwrite.cli.url and trusted_domains), and the server's own name
+# keeps serving.
 check_7_app_domain() {
   local domain="$1" r
   vcmd_t 900 "rc domain add $domain" >&2 2>&1 || { fail "rc domain add $domain failed"; return 1; }
@@ -959,6 +964,13 @@ case "$1" in
     e="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c")"
     printf '%s\n' "$e" | grep -qxF "FORGEJO__server__ROOT_URL=https://$3/" || { echo "container ROOT_URL"; exit 1; }
     printf '%s\n' "$e" | grep -qxF "FORGEJO__server__DOMAIN=$3" || { echo "container DOMAIN"; exit 1; }
+    ;;
+  grafana)
+    grep -qxF "GRAFANA_ROOT_URL=https://$3/" "$envf" || { echo "env GRAFANA_ROOT_URL"; exit 1; }
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" | grep -qxF "GF_SERVER_ROOT_URL=https://$3/" ||
+      { echo "container GF_SERVER_ROOT_URL"; exit 1; }
+    l="$(docker ps -q --filter label=com.docker.compose.project=vps-apps-grafana --filter label=com.docker.compose.service=loki | head -n 1)"
+    [ "$(docker inspect -f '{{index .Config.Labels "caddy"}}' "$l")" = "$2 $3" ] || { echo "loki caddy label"; exit 1; }
     ;;
   nextcloud)
     occ() { docker exec -u www-data "$c" php occ --no-interaction "$@" </dev/null; }
@@ -1244,12 +1256,128 @@ check_17_uptimekuma() {
   [ "$rc" -eq 0 ] || { fail "admin.js login over https://$HOST exited $rc"; return 1; }
 }
 
+# --- grafana ------------------------------------------------------------------------------------
+
+# gf_get <user> <password file> <path> [curl args...]: GET https://<host><path> with a basic login
+# from a curl config on stdin, the body in BODY; prints the HTTP status, 000 when nothing answered.
+gf_get() {
+  local user="$1" pwf="$2" path="$3" code
+  shift 3
+  : >"$BODY"
+  code="$(curl_cred "$user" "$pwf" -sS -o "$(winpath "$BODY")" -w '%{http_code}' --max-time 30 "$@" \
+    "https://$HOST$path" 2>/dev/null)" || code=000
+  printf '%s' "${code:-000}"
+}
+
+# gf_prom_one <query>: the Prometheus data source, through Grafana as admin, answers 1 for <query>.
+gf_prom_one() {
+  [ "$(gf_get admin "$GF_PW" /api/datasources/proxy/uid/vps-apps-prometheus/api/v1/query -G \
+    --data-urlencode "query=$1")" = 200 ] && jq -e '.data.result[0].value[1] == "1"' "$BODY" >/dev/null 2>&1
+}
+
+# gf_line_back: the line check 18 pushed is in Loki, read through Grafana's Loki data source.
+gf_line_back() {
+  [ "$(gf_get admin "$GF_PW" /api/datasources/proxy/uid/vps-apps-loki/loki/api/v1/query_range -G \
+    --data-urlencode 'query={job="vps-smoke"}' --data-urlencode 'limit=100')" = 200 ] &&
+    jq -e --arg l "$GF_LINE" '[.data.result[].values[][1]] | index($l) != null' "$BODY" >/dev/null 2>&1
+}
+
+# gf_push <password file or "-"> : POST one line to the push path, as loki with that password ("-":
+# no credential); prints the HTTP status.
+gf_push() {
+  local body
+  body="{\"streams\":[{\"stream\":{\"job\":\"vps-smoke\"},\"values\":[[\"$(date +%s)000000000\",\"$GF_LINE\"]]}]}"
+  if [ "$1" = - ]; then
+    curl_t -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: application/json' \
+      --data "$body" "https://$HOST/loki/api/v1/push" 2>/dev/null || true
+  else
+    curl_cred loki "$1" -sS -o /dev/null -w '%{http_code}' --max-time 30 -X POST \
+      -H 'Content-Type: application/json' --data "$body" "https://$HOST/loki/api/v1/push" 2>/dev/null || true
+  fi
+}
+
+check_18_grafana() {
+  local lk="$TMP/loki.pw" bad="$TMP/bad.pw" code out uid path iface p a
+  GF_PW="$TMP/app.pw"
+  [ "$APP" = grafana ] || { fail "needs --app grafana"; return 1; }
+  ensure_ready || return 1
+  say "grafana: the login page answers over HTTPS"
+  out="$(curl_t -fsS --max-time 30 "https://$HOST/login" 2>/dev/null)" || out=""
+  grep -q 'grafanaBootData' <<<"$out" || { fail "https://$HOST/login is not Grafana's login page"; return 1; }
+  # One login only: Grafana locks a user for 5 minutes after 5 failed logins, and app_expose spent one.
+  say "grafana: API login as admin"
+  app_pw_file "$GF_PW"
+  code="$(gf_get admin "$GF_PW" /api/user)"
+  { [ "$code" = 200 ] && jq -e '.login == "admin" and .isGrafanaAdmin == true' "$BODY" >/dev/null 2>&1; } ||
+    { fail "GET /api/user as admin answered HTTP $code: $(head -c 200 "$BODY")"; return 1; }
+  say "grafana: sign-up is disabled and nothing answers without a login"
+  : >"$BODY"
+  code="$(curl_t -sS -o "$(winpath "$BODY")" -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: application/json' \
+    --data '{"email":"vps-smoke-check"}' "https://$HOST/api/user/signup" 2>/dev/null)" || code=000
+  { [ "$code" = 401 ] && jq -e '.message == "User signup is disabled"' "$BODY" >/dev/null 2>&1; } ||
+    { fail "POST /api/user/signup answered HTTP $code: $(head -c 200 "$BODY")"; return 1; }
+  [ "$(http_code "https://$HOST/api/org/")" = 401 ] || { fail "GET /api/org/ without a login is not 401"; return 1; }
+  say "grafana: the Prometheus and Loki data sources are healthy"
+  for uid in vps-apps-prometheus vps-apps-loki; do
+    code="$(gf_get admin "$GF_PW" "/api/datasources/uid/$uid/health")"
+    { [ "$code" = 200 ] && jq -e '.status == "OK"' "$BODY" >/dev/null 2>&1; } ||
+      { fail "the $uid data source health answered HTTP $code: $(head -c 200 "$BODY")"; return 1; }
+  done
+  say "grafana: node-exporter's metrics reach Prometheus, with the VPS's own interface"
+  retry 180 10 gf_prom_one 'up{job="node"}' || { fail 'up{job="node"} is not 1 in Prometheus'; return 1; }
+  # shellcheck disable=SC2016 # awk runs on the VPS
+  iface="$(vcmd 'ip -4 route show default | awk '\''{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}'\''' 2>/dev/null | tr -d '\r\n')"
+  [ -n "$iface" ] || { fail "cannot read the VPS's default interface"; return 1; }
+  retry 60 10 gf_prom_one "count(node_network_receive_bytes_total{job=\"node\",device=\"$iface\"})" ||
+    { fail "node-exporter has no traffic counter for $iface: it does not see the host's network"; return 1; }
+  say "grafana: the Loki push path takes only its credential"
+  vcmd 'sed -n "s/^Loki push password: //p" /root/vps-apps-credentials.txt | head -n 1' 2>/dev/null | tr -d '\r\n' >"$lk"
+  [ -s "$lk" ] || { fail "no Loki push password in /root/vps-apps-credentials.txt"; return 1; }
+  GF_LINE="vps-smoke $(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  printf 'wrong-%s' "$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')" >"$bad"
+  code="$(gf_push -)"
+  [ "$code" = 401 ] || { fail "a push without the credential answered HTTP $code, expected 401"; return 1; }
+  code="$(gf_push "$bad")"
+  [ "$code" = 401 ] || { fail "a push with a wrong password answered HTTP $code, expected 401"; return 1; }
+  code="$(gf_push "$lk")"
+  [ "$code" = 204 ] || { fail "a push with the generated credential answered HTTP $code, expected 204"; return 1; }
+  retry 60 5 gf_line_back || { fail "the pushed line does not come back through Grafana's Loki data source"; return 1; }
+  say "grafana: Loki's query API is not public, not even with the push credential"
+  for path in /loki/api/v1/labels '/loki/api/v1/query_range?query=%7Bjob%3D%22vps-smoke%22%7D' \
+    /loki/api/v1/push/../labels /loki/api/v1/tail /ready /metrics; do
+    for p in - "$lk"; do
+      if [ "$p" = - ]; then
+        : >"$BODY"
+        code="$(curl_t -sS -o "$(winpath "$BODY")" -w '%{http_code}' --max-time 30 "https://$HOST$path" 2>/dev/null)" || code=000
+      else
+        code="$(gf_get loki "$p" "$path")"
+      fi
+      if [ "$code" = 200 ] || grep -qF -e "$GF_LINE" -e '"status":"success"' "$BODY"; then
+        fail "GET $path answered HTTP $code with Loki's data"
+        return 1
+      fi
+    done
+  done
+  rm -f "$lk" "$bad" "$GF_PW"
+  say "grafana: Grafana, Loki and Prometheus are not reachable from outside, and listen on loopback only"
+  for p in 3000 3100 9090 9091 9100; do
+    if tcp_open "$IP" "$p"; then
+      fail "port $p answers from outside"
+      return 1
+    fi
+  done
+  out="$(vcmd "ss -ltnH '( sport = :3000 or sport = :3100 or sport = :9090 or sport = :9091 or sport = :9100 )' | awk '{print \$4}'" 2>/dev/null | tr -d '\r')"
+  for a in $out; do
+    case "$a" in 127.0.0.1:*) ;; *) fail "$a listens beyond loopback"; return 1 ;; esac
+  done
+}
+
 name_of() {
   case "$1" in
     1) echo install ;; 2) echo status ;; 3) echo https ;; 4) echo n8n ;; 5) echo docker ;;
     6) echo resume ;; 7) echo domain ;; 8) echo hub-64 ;; 9) echo timer ;; 10) echo docker-info ;;
     11) echo nft-reboot ;; 12) echo rc-port ;; 13) echo ssh ;; 14) echo nextcloud ;; 15) echo forgejo ;;
-    16) echo wordpress ;; 17) echo uptimekuma ;;
+    16) echo wordpress ;; 17) echo uptimekuma ;; 18) echo grafana ;;
   esac
 }
 func_of() {
@@ -1259,6 +1387,7 @@ func_of() {
     9) echo check_9_timer ;; 10) echo check_10_docker_info ;; 11) echo check_11_nft_reboot ;;
     12) echo check_12_rc_port ;; 13) echo check_13_ssh ;; 14) echo check_14_nextcloud ;;
     15) echo check_15_forgejo ;; 16) echo check_16_wordpress ;; 17) echo check_17_uptimekuma ;;
+    18) echo check_18_grafana ;;
   esac
 }
 

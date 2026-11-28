@@ -10,7 +10,7 @@ Needs `bash`, `curl`, `jq` and an OpenSSH client on the machine that runs it (on
 
 ```bash
 tests/e2e/vps-smoke.sh --ssh-key <private key> --ip <ipv4> \
-  --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro] \
+  --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro] \
   --version <40-char commit> --password-file <file> [--checks 1,2,3] [--expect-pw-auth yes|no|auto] \
   [--probe-host <ipv4>]
 ```
@@ -58,11 +58,11 @@ of seconds, not two minutes.
 |---|------|----------------|
 | 1 | install | the rendered recipe runs as root with the nasty password; the timer is armed; the password file is byte-exact |
 | 2 | status | `/.well-known/rarecloud-app-status` reads `installing`, then `ready` |
-| 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate; for Nextcloud, Forgejo, WordPress and Uptime Kuma the app's health page says it is up (below) |
+| 3 | https | `https://<ip-dashed>.sslip.io/` answers with a valid certificate; for Nextcloud, Forgejo, WordPress, Uptime Kuma and Grafana the app's health page says it is up (below) |
 | 4 | n8n | n8n and its workers have `GENERIC_TIMEZONE=UTC` and `TZ=UTC`; in pro mode, Valkey answers `NOAUTH` without its password and `PONG` with it, and the password is on no command line in `ps`; login as `e2e-owner@<ip-dashed>.sslip.io` (the email the script puts in `{{username}}`), API key, webhook workflow runs, password change, reboot, `rc update`, login each time (n8n only) |
 | 5 | docker | whoami over HTTPS; postgres on 5432 closed, `rc port open`, restarts of docker and `vps-apps-nft`, `rc port close`, on IPv4 and IPv6 (docker only). Port 22 is probed first as a positive control |
 | 6 | resume | install killed after `app_up_setup`, the timer resumes it, same `.env` checksum (fresh OS only) |
-| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving. Nextcloud, Forgejo and Uptime Kuma: the health page answers on the new name, the `.env` and the container's caddy label list both names, Forgejo's URL variables and Nextcloud's `overwrite.cli.url` move to the new name, Nextcloud trusts both, and the first name keeps serving. Docker and WordPress: the designed refusal, and the first name keeps serving |
+| 7 | domain | `rc domain add app.<ip-dashed>.sslip.io` serves the app there; n8n URL variables move to the new name and the first name keeps serving. Nextcloud, Forgejo, Uptime Kuma and Grafana: the health page answers on the new name, the `.env` and the container's caddy label list both names (Grafana's Loki container too), Forgejo's URL variables, Grafana's root URL and Nextcloud's `overwrite.cli.url` move to the new name, Nextcloud trusts both, and the first name keeps serving. Docker and WordPress: the designed refusal, and the first name keeps serving |
 | 8 | hub-64 | records the VPS IPv6 /64; the image pull count and Docker Hub rate limit headers are taken the moment the install is ready (before any restart), or reported as unreliable when that moment was not seen in this run |
 | 9 | timer | three minutes after ready: still ready, timer inactive and disabled, password file gone |
 | 10 | docker-info | `docker info` works with the `daemon.json` (firewall-backend iptables) |
@@ -73,15 +73,16 @@ of seconds, not two minutes.
 | 15 | forgejo | `GET /api/v1/user` as `gitadmin` names the site admin `gitadmin`; `/user/sign_up` says "Registration is disabled"; `ssh-keyscan -p 2222` gets a host key (forgejo only) |
 | 16 | wordpress | a `wp-login.php` login as `admin` gives a 302 to `/wp-admin/` and a `wordpress_logged_in_` cookie; `/wp-admin/install.php` says "Already Installed"; `?action=register` redirects to `registration=disabled`; a POST to `/xmlrpc.php` and `/xmlrpc.php/x` answers 403 (wordpress only) |
 | 17 | uptimekuma | `admin.js` run in the app container over `https://<ip-dashed>.sslip.io`: `need-setup` prints `false` and `login` as `admin` succeeds (uptimekuma only) |
+| 18 | grafana | `/login` is Grafana's page; `GET /api/user` as `admin` is the server admin; `POST /api/user/signup` answers 401 "User signup is disabled" and `/api/org/` 401 without a login; both data sources report `OK`; `up{job="node"}` is 1 and node-exporter counts the VPS's own default interface; a push to `/loki/api/v1/push` answers 401 without and with a wrong credential, 204 with the generated one from `/root/vps-apps-credentials.txt`, and the line comes back through Grafana; Loki's query paths answer no Loki data, with or without the push credential; 3000, 3100, 9090, 9091 and 9100 are closed from outside and listen on loopback only (grafana only) |
 
 The health page of check 3 and check 7: Nextcloud `/status.php` with `installed` true, Forgejo
 `/api/healthz` with `status` pass, WordPress `/?rest_route=/` with `home` `https://<ip-dashed>.sslip.io`,
-Uptime Kuma `/api/entry-page` with `type` entryPage (its `/` only redirects).
+Uptime Kuma `/api/entry-page` with `type` entryPage (its `/` only redirects), Grafana `/api/health` with `database` ok.
 
 Default checks: docker `1 2 3 5 7 8 9 10 11 12 13`, n8n `1 2 3 4 7 8 9 10 11 12 13`, and for nextcloud,
-forgejo, wordpress and uptimekuma `1 2 3`, the app's own check (14, 15, 16 or 17), then `7 8 9 10 11 12 13`.
+forgejo, wordpress, uptimekuma and grafana `1 2 3`, the app's own check (14, 15, 16, 17 or 18), then `7 8 9 10 11 12 13`.
 Check 6 installs by itself, so it is never a default and cannot be combined with check 1. Checks run in this
-order whatever the order of `--checks`: 1 6 2 3 4 5 14 15 16 17 7 8 10 12 13 9 11.
+order whatever the order of `--checks`: 1 6 2 3 4 5 14 15 16 17 18 7 8 10 12 13 9 11.
 
 Check 4 runs `rc update` while n8n's `stable` tag is on the major version the VPS runs. Holding n8n on that
 major when `stable` moves to a new one is covered by the bats tests only.
@@ -110,6 +111,7 @@ tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app nextcloud --version $V --pas
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app forgejo --version $V --password-file <pwfile>
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app wordpress --version $V --password-file <pwfile>
 tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app uptimekuma --version $V --password-file <pwfile>
+tests/e2e/vps-smoke.sh --ssh-key $K --ip <ip> --app grafana --version $V --password-file <pwfile>
 ```
 
 ## Run log
