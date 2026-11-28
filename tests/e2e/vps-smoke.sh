@@ -4,8 +4,10 @@
 #
 # Usage:
 #   tests/e2e/vps-smoke.sh --ssh-key <path> --ip <ipv4>
-#     --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro] \
+#     --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana|ghrunner|glrunner> [--mode starter|pro] \
 #     --version <sha40> --password-file <file> [--checks 1,2,3] [--expect-pw-auth yes|no|auto]
+#   For ghrunner and glrunner, E2E_RUNNER_URL and E2E_RUNNER_TOKEN_FILE (both optional) make check 19
+#   or 20 register the runner from the page with a real repository or GitLab instance.
 #
 # One PASS or FAIL line per check, in the form `PASS <n> <name>` or `FAIL <n> <name>: <reason>`.
 # Exit 0 only when every selected check passed. Progress goes to stderr. The password is read from
@@ -23,7 +25,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 usage() {
   cat >&2 <<'USAGE'
 usage: vps-smoke.sh --ssh-key <path> --ip <ipv4>
-                    --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro]
+                    --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana|ghrunner|glrunner>
+                    [--mode starter|pro]
                     --version <sha40> --password-file <file> [--checks 1,2,3,...]
                     [--expect-pw-auth yes|no|auto] [--probe-host <ipv4>]
 checks:
@@ -45,10 +48,15 @@ checks:
   16 wordpress      wp-login.php as admin, installer closed, registration off, xmlrpc.php 403 (wordpress only)
   17 uptimekuma     setup no longer offered, admin logs in through the proxy (uptimekuma only)
   18 grafana        admin login, signup off, data sources, node metrics, Loki push only with its credential
+  19 ghrunner       the registration page: login, CSRF, token checks, host side, the runner installed (ghrunner only)
+  20 glrunner       the registration page: login, CSRF, token checks, host side, GitLab Runner running (glrunner only)
 Default checks: docker 1 2 3 5 7 8 9 10 11 12 13; n8n 1 2 3 4 7 8 9 10 11 12 13; nextcloud,
-forgejo, wordpress, uptimekuma and grafana 1 2 3, their own check (14 to 18), then 7 8 9 10 11 12 13.
-Check 6 is never a default (it installs by itself, so it cannot follow check 1). Selected checks
-run in this order: 1 6 2 3 4 5 14 15 16 17 18 7 8 10 12 13 9 11.
+forgejo, wordpress, uptimekuma, grafana, ghrunner and glrunner 1 2 3, their own check (14 to 20),
+then 7 8 9 10 11 12 13. Check 6 is never a default (it installs by itself, so it cannot follow
+check 1). Selected checks run in this order: 1 6 2 3 4 5 14 15 16 17 18 19 20 7 8 10 12 13 9 11.
+Checks 19 and 20 register the runner for real only when E2E_RUNNER_URL (the repository,
+organization or GitLab address) and E2E_RUNNER_TOKEN_FILE (a file with the registration token)
+are set.
 USAGE
   exit 2
 }
@@ -78,8 +86,12 @@ done
 octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 [[ "$IP" =~ ^${octet}(\.${octet}){3}$ ]] || { echo "vps-smoke: --ip must be an IPv4 address" >&2; usage; }
 case "$APP" in
-  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma | grafana) ;;
-  *) echo "vps-smoke: --app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana" >&2; usage ;;
+  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma | grafana | ghrunner | glrunner) ;;
+  *)
+    echo "vps-smoke: --app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma, grafana, ghrunner" \
+      "or glrunner" >&2
+    usage
+    ;;
 esac
 case "$MODE" in
   "") ;;
@@ -95,7 +107,7 @@ if [ -n "$PROBE" ]; then
 fi
 case "$EXPECT_PW" in yes | no | auto) ;; *) echo "vps-smoke: --expect-pw-auth must be yes, no or auto" >&2; usage ;; esac
 
-ORDER=(1 6 2 3 4 5 14 15 16 17 18 7 8 10 12 13 9 11)
+ORDER=(1 6 2 3 4 5 14 15 16 17 18 19 20 7 8 10 12 13 9 11)
 if [ -z "$CHECKS" ]; then
   case "$APP" in
     docker) CHECKS="1,2,3,5,7,8,9,10,11,12,13" ;;
@@ -105,12 +117,14 @@ if [ -z "$CHECKS" ]; then
     wordpress) CHECKS="1,2,3,16,7,8,9,10,11,12,13" ;;
     uptimekuma) CHECKS="1,2,3,17,7,8,9,10,11,12,13" ;;
     grafana) CHECKS="1,2,3,18,7,8,9,10,11,12,13" ;;
+    ghrunner) CHECKS="1,2,3,19,7,8,9,10,11,12,13" ;;
+    glrunner) CHECKS="1,2,3,20,7,8,9,10,11,12,13" ;;
   esac
 fi
 SELECTED=" "
 IFS=',' read -r -a _picked <<<"$CHECKS"
 for n in "${_picked[@]}"; do
-  [[ "$n" =~ ^([1-9]|1[0-8])$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 18" >&2; usage; }
+  [[ "$n" =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "vps-smoke: --checks takes numbers from 1 to 20" >&2; usage; }
   SELECTED="$SELECTED$n "
 done
 if [[ "$SELECTED" == *" 1 "* && "$SELECTED" == *" 6 "* ]]; then
@@ -277,7 +291,8 @@ curl_cred() {
 }
 
 # app_health_path: the page Nextcloud, Forgejo, WordPress and Uptime Kuma answer once they are up
-# (the one their ready check reads); nothing for docker and n8n. Uptime Kuma's / only redirects.
+# (the one their ready check reads); nothing for docker and n8n. Uptime Kuma's / only redirects. The
+# runner apps' page answers it only behind its login (app_health_ok).
 app_health_path() {
   case "$APP" in
     nextcloud) echo /status.php ;;
@@ -285,14 +300,19 @@ app_health_path() {
     wordpress) echo '/?rest_route=/' ;;
     uptimekuma) echo /api/entry-page ;;
     grafana) echo /api/health ;;
+    ghrunner | glrunner) echo /healthz ;;
   esac
 }
 
 # app_health_ok <name>: https://<name><health path> loads with a valid certificate and says the app
 # is up: Nextcloud installed, Forgejo's health check passing, WordPress naming https://<host> as its
-# home, Uptime Kuma's entry page.
+# home, Uptime Kuma's entry page. A runner app's page answers ok behind its login (runner_health_ok).
 app_health_ok() {
   local out
+  if is_runner_app; then
+    runner_health_ok "$1"
+    return
+  fi
   out="$(curl_t -fsS --max-time 15 "https://$1$(app_health_path)" 2>/dev/null)" || return 1
   case "$APP" in
     nextcloud) jq -e '.installed == true' <<<"$out" ;;
@@ -317,6 +337,60 @@ app_pw_file() {
     printf '%s' "$PW" >"$1"
   fi
   gen=""
+}
+
+# --- the runner apps' page (ghrunner, glrunner) --------------------------------------------------
+
+is_runner_app() { [ "$APP" = ghrunner ] || [ "$APP" = glrunner ]; }
+
+# The page login's password (app_pw_file), read once for the health checks; check 19 and 20 read it
+# again so NOTE says when it is a generated one. RUNNER_JAR keeps the page's CSRF cookie.
+RUNNER_PW="$TMP/runner.pw"
+RUNNER_JAR="$TMP/runner.jar"
+
+# runner_gate_closed <name>: https://<name>/ answers 401 with a Basic challenge over a valid
+# certificate: the page asks for its login before it shows anything.
+runner_gate_closed() {
+  local head
+  head="$(curl_t -sS -o /dev/null -D - --max-time 15 "https://$1/" 2>/dev/null)" || return 1
+  [[ "$head" =~ ^HTTP/[0-9.]+\ 401 ]] || return 1
+  grep -qi '^www-authenticate: *basic' <<<"$head"
+}
+
+# runner_health_ok <name>: https://<name>/healthz answers ok with the page login.
+runner_health_ok() {
+  local out
+  [ -s "$RUNNER_PW" ] || app_pw_file "$RUNNER_PW"
+  out="$(curl_cred admin "$RUNNER_PW" -fsS --max-time 15 "https://$1/healthz" 2>/dev/null)" || return 1
+  [ "$out" = ok ]
+}
+
+# runner_get: GET https://<host>/ as admin, the page in BODY and its cookie in RUNNER_JAR; prints the
+# HTTP status.
+runner_get() {
+  local code
+  : >"$BODY"
+  code="$(curl_cred admin "$RUNNER_PW" -sS -o "$(winpath "$BODY")" -c "$(winpath "$RUNNER_JAR")" \
+    -w '%{http_code}' --max-time 30 "https://$HOST/" 2>/dev/null)" || code=000
+  printf '%s' "${code:-000}"
+}
+
+# runner_post <csrf> <origin> <address> <token file>: the page's form, POSTed as admin with the
+# cookie from runner_get. The token is url-encoded by curl from <token file>, never an argument.
+# The answer is in BODY; prints the HTTP status.
+runner_post() {
+  local code
+  : >"$BODY"
+  code="$(curl_cred admin "$RUNNER_PW" -sS -o "$(winpath "$BODY")" -b "$(winpath "$RUNNER_JAR")" \
+    -w '%{http_code}' --max-time 30 -H "Origin: $2" --data-urlencode "csrf=$1" --data-urlencode "url=$3" \
+    --data-urlencode "token@$(winpath "$4")" "https://$HOST/" 2>/dev/null)" || code=000
+  printf '%s' "${code:-000}"
+}
+
+# runner_state_settled: the page, as the customer sees it, shows the registration finished, either
+# registered or failed (the page is then in BODY).
+runner_state_settled() {
+  [ "$(runner_get)" = 200 ] && grep -qE 'class="state-(registered|failed)"' "$BODY"
 }
 
 # tcp_open <host> <port>: 0 when a TCP connection is made within 5 seconds. With --probe-host the
@@ -488,8 +562,14 @@ check_3_https() {
   local body="$TMP/https.body" vr
   say "waiting for a valid certificate on https://$HOST/"
   ensure_ready || return 1
-  retry 300 5 curl_t -fsS --max-time 15 -o "$body" "https://$HOST/" 2>/dev/null ||
-    { fail "curl -fsS https://$HOST/ never passed (certificate or reply)"; return 1; }
+  if is_runner_app; then
+    # The page answers nothing without its login: the gate closed is the reply to wait for.
+    retry 300 5 runner_gate_closed "$HOST" ||
+      { fail "https://$HOST/ never asked for the page login over a valid certificate"; return 1; }
+  else
+    retry 300 5 curl_t -fsS --max-time 15 -o "$body" "https://$HOST/" 2>/dev/null ||
+      { fail "curl -fsS https://$HOST/ never passed (certificate or reply)"; return 1; }
+  fi
   vr="$(curl_t -sS --max-time 15 -o /dev/null -w '%{ssl_verify_result}' "https://$HOST/" 2>/dev/null || true)"
   [ "$vr" = 0 ] || { fail "certificate verify result is '$vr'"; return 1; }
   if [ "$APP" = docker ] && ! grep -q 'Your Docker server is ready' "$body"; then
@@ -937,20 +1017,25 @@ EOF
   rm -f "$body"
 }
 
-# check_7_app_domain <domain>: check 7 for Nextcloud, Forgejo, Uptime Kuma and Grafana. The new name
-# serves the app, the .env and the recreated container's caddy label list both names (Grafana's
-# Loki container too), the app's own settings follow the newest name (Forgejo's URL variables,
-# Grafana's root URL, Nextcloud's overwrite.cli.url and trusted_domains), and the server's own name
-# keeps serving.
+# check_7_app_domain <domain>: check 7 for Nextcloud, Forgejo, Uptime Kuma, Grafana and the runner
+# apps. The new name serves the app (a runner app's page behind the same login), the .env and the
+# recreated container's caddy label list both names (Grafana's Loki container too), the app's own
+# settings follow the newest name (Forgejo's URL variables, Grafana's root URL, Nextcloud's
+# overwrite.cli.url and trusted_domains), and the server's own name keeps serving.
 check_7_app_domain() {
   local domain="$1" r
   vcmd_t 900 "rc domain add $domain" >&2 2>&1 || { fail "rc domain add $domain failed"; return 1; }
   vcmd "grep -qxF $domain /etc/vps-apps/domains" >/dev/null 2>&1 || { fail "$domain is not in /etc/vps-apps/domains"; return 1; }
   retry 300 5 app_health_ok "$domain" || { fail "https://$domain$(app_health_path) does not answer as a running $APP"; return 1; }
+  if is_runner_app && ! runner_gate_closed "$domain"; then
+    fail "https://$domain/ answers without asking for the page login"
+    return 1
+  fi
   r="$(vscript "$APP" "$HOST" "$domain" <<'EOF'
 envf="/opt/vps-apps-data/$1/.env"
 case "$1" in
   uptimekuma) svc=uptime-kuma ;;
+  ghrunner | glrunner) svc=page ;;
   *) svc="$1" ;;
 esac
 grep -qxF "VA_SITE_ADDRS=\"$2 $3\"" "$envf" || { echo "env VA_SITE_ADDRS"; exit 1; }
@@ -1372,12 +1457,130 @@ check_18_grafana() {
   done
 }
 
+# --- ghrunner and glrunner -----------------------------------------------------------------------
+
+# check_runner <app>: check 19 (ghrunner) or 20 (glrunner). The page asks for its login and refuses a
+# wrong password; the login opens it, with the status and one form carrying a CSRF value. A form
+# without that value, or from another origin, is refused, and so is a personal access token, and
+# none of them queues a request. On the server: the register path unit watching the inbox, the
+# inbox the page user's and the work directory root's on a tmpfs, the page container read-only, as
+# the page user, without the Docker socket and without a published port; for ghrunner the runner
+# installed (2.x) and its unit enabled only once registered, for glrunner the gitlab-runner
+# container running without a published port. With E2E_RUNNER_URL and E2E_RUNNER_TOKEN_FILE, it
+# then registers from the page and waits for the page to show the runner registered, with the
+# token in no line of the register unit's journal.
+check_runner() {
+  local app="$1" title addr bad="$TMP/runner-bad.pw" tok="$TMP/runner.token" code csrf r leak
+  [ "$APP" = "$app" ] || { fail "needs --app $app"; return 1; }
+  ensure_ready || return 1
+  case "$app" in
+    ghrunner) title="GitHub Actions runner" addr=https://github.com/octocat/hello-world ;;
+    glrunner) title="GitLab Runner" addr=https://gitlab.com ;;
+  esac
+  say "$app: the page asks for its login, and a wrong password does not open it"
+  runner_gate_closed "$HOST" || { fail "https://$HOST/ answers without asking for the page login"; return 1; }
+  printf 'wrong-%s' "$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')" >"$bad"
+  code="$(curl_cred admin "$bad" -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$HOST/" 2>/dev/null)" || code=000
+  [ "$code" = 401 ] || { fail "a wrong password answered HTTP $code, expected 401"; return 1; }
+  say "$app: the login opens the page, with the status and the form"
+  app_pw_file "$RUNNER_PW"
+  rm -f "$RUNNER_JAR"
+  code="$(runner_get)"
+  { [ "$code" = 200 ] && grep -qF "<h1>$title</h1>" "$BODY" && grep -qF '<h2>Status</h2>' "$BODY"; } ||
+    { fail "GET / as admin answered HTTP $code without the $title page: $(head -c 200 "$BODY")"; return 1; }
+  csrf="$(sed -n 's/.*name="csrf" value="\([A-Za-z0-9_-]*\)".*/\1/p' "$BODY" | head -n 1)"
+  [ -n "$csrf" ] || { fail "the page has no CSRF value in its form"; return 1; }
+  grep -q 'rc_csrf' "$RUNNER_JAR" || { fail "the page set no CSRF cookie"; return 1; }
+  say "$app: forms without the CSRF value, from another origin or with a personal token queue nothing"
+  printf 'not-a-token' >"$tok"
+  code="$(runner_post "" "https://$HOST" "$addr" "$tok")"
+  [ "$code" = 403 ] || { fail "a form without the CSRF value answered HTTP $code, expected 403"; return 1; }
+  code="$(runner_post "$csrf" "https://evil.example.com" "$addr" "$tok")"
+  [ "$code" = 403 ] || { fail "a form from another origin answered HTTP $code, expected 403"; return 1; }
+  case "$app" in
+    ghrunner) printf 'ghp_%s' "$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')" >"$tok" ;;
+    glrunner) printf 'glpat-%s' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')" >"$tok" ;;
+  esac
+  code="$(runner_post "$csrf" "https://$HOST" "$addr" "$tok")"
+  { [ "$code" = 400 ] && grep -qF 'This is a personal access token' "$BODY"; } ||
+    { fail "a personal access token answered HTTP $code: $(head -c 200 "$BODY")"; return 1; }
+  if grep -qF -f "$tok" "$BODY"; then
+    fail "the page echoed the token it refused"
+    return 1
+  fi
+  rm -f "$tok" "$bad"
+  vcmd "test ! -e /run/vps-apps-$app/inbox/request" >/dev/null 2>&1 || { fail "a refused form left a request in the inbox"; return 1; }
+  say "$app: the register unit, the inbox and the page container on the server"
+  r="$(vscript "$app" <<'EOF'
+app="$1"
+systemctl is-enabled --quiet "vps-apps-$app-register.path" || { echo "the register path unit is not enabled"; exit 1; }
+systemctl is-active --quiet "vps-apps-$app-register.path" || { echo "the register path unit is not active"; exit 1; }
+[ "$(stat -f -c %T /run)" = tmpfs ] || { echo "/run is not a tmpfs"; exit 1; }
+[ "$(stat -c '%U %a' "/run/vps-apps-$app/inbox")" = "vps-apps-page 700" ] || { echo "inbox owner or mode"; exit 1; }
+[ "$(stat -c '%U %a' "/run/vps-apps-$app/work")" = "root 700" ] || { echo "work directory owner or mode"; exit 1; }
+c="$(docker ps -q --filter "label=com.docker.compose.project=vps-apps-$app" --filter label=com.docker.compose.service=page | head -n 1)"
+[ -n "$c" ] || { echo "no page container"; exit 1; }
+[ "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$c")" = true ] || { echo "the page's root filesystem is writable"; exit 1; }
+[ "$(docker inspect -f '{{.Config.User}}' "$c")" = "$(id -u vps-apps-page):$(id -g vps-apps-page)" ] || { echo "the page does not run as vps-apps-page"; exit 1; }
+if docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$c" | grep -q 'docker\.sock'; then
+  echo "the page has the Docker socket"
+  exit 1
+fi
+[ -z "$(docker port "$c")" ] || { echo "the page publishes a port"; exit 1; }
+case "$app" in
+  ghrunner)
+    id -nG ghrunner | tr ' ' '\n' | grep -qx docker || { echo "ghrunner is not in the docker group"; exit 1; }
+    v="$(HOME=/home/ghrunner setpriv --reuid=ghrunner --regid=ghrunner --init-groups -- \
+      /home/ghrunner/actions-runner/bin/Runner.Listener --version </dev/null 2>/dev/null)"
+    [[ "$v" =~ ^2\.[0-9]+\.[0-9]+ ]] || { echo "Runner.Listener --version says '$v'"; exit 1; }
+    if [ -f /home/ghrunner/actions-runner/.runner ]; then
+      systemctl is-active --quiet vps-apps-ghrunner || { echo "the registered runner is not running"; exit 1; }
+    elif systemctl is-enabled --quiet vps-apps-ghrunner; then
+      echo "the runner's unit is enabled before a registration"
+      exit 1
+    fi
+    ;;
+  glrunner)
+    g="$(docker ps -q --filter label=com.docker.compose.project=vps-apps-glrunner --filter label=com.docker.compose.service=gitlab-runner | head -n 1)"
+    [ -n "$g" ] || { echo "no gitlab-runner container"; exit 1; }
+    [ -z "$(docker port "$g")" ] || { echo "gitlab-runner publishes a port"; exit 1; }
+    docker exec "$g" gitlab-runner --version </dev/null >/dev/null 2>&1 || { echo "gitlab-runner --version fails"; exit 1; }
+    ;;
+esac
+echo ok
+EOF
+  )" || { fail "on the server: $r"; return 1; }
+  if [ -z "${E2E_RUNNER_URL:-}" ] || [ -z "${E2E_RUNNER_TOKEN_FILE:-}" ]; then
+    NOTE="${NOTE:+$NOTE; }registration not exercised: set E2E_RUNNER_URL and E2E_RUNNER_TOKEN_FILE for it"
+    return 0
+  fi
+  say "$app: registering with $E2E_RUNNER_URL from the page"
+  tr -d '\r\n' <"$E2E_RUNNER_TOKEN_FILE" >"$tok"
+  code="$(runner_post "$csrf" "https://$HOST" "$E2E_RUNNER_URL" "$tok")"
+  [ "$code" = 303 ] || { rm -f "$tok"; fail "the form answered HTTP $code: $(head -c 200 "$BODY")"; return 1; }
+  if ! retry 600 10 runner_state_settled || ! grep -qF 'class="state-registered"' "$BODY"; then
+    rm -f "$tok"
+    fail "the page does not show the runner registered: $(sed -n 's/.*<h2>Status<\/h2><p>\([^<]*\)<.*/\1/p' "$BODY" | head -n 1)"
+    return 1
+  fi
+  # The token goes to the server on ssh stdin, as grep's pattern file: on no command line there.
+  leak="$(timeout 120 "$SSH_BIN" "${SSH_OPTS[@]}" "root@$IP" \
+    "exec 3<&0; journalctl -u vps-apps-$app-register --no-pager 2>/dev/null | grep -qF -f /dev/fd/3 && echo leak || echo clean" \
+    <"$tok" 2>/dev/null | tr -d '\r\n')" || leak=""
+  rm -f "$tok"
+  [ "$leak" = clean ] || { fail "the register unit's journal holds the token (or could not be read: '$leak')"; return 1; }
+  NOTE="${NOTE:+$NOTE; }registered with $E2E_RUNNER_URL: remove the runner there when done"
+}
+
+check_19_ghrunner() { check_runner ghrunner; }
+check_20_glrunner() { check_runner glrunner; }
+
 name_of() {
   case "$1" in
     1) echo install ;; 2) echo status ;; 3) echo https ;; 4) echo n8n ;; 5) echo docker ;;
     6) echo resume ;; 7) echo domain ;; 8) echo hub-64 ;; 9) echo timer ;; 10) echo docker-info ;;
     11) echo nft-reboot ;; 12) echo rc-port ;; 13) echo ssh ;; 14) echo nextcloud ;; 15) echo forgejo ;;
-    16) echo wordpress ;; 17) echo uptimekuma ;; 18) echo grafana ;;
+    16) echo wordpress ;; 17) echo uptimekuma ;; 18) echo grafana ;; 19) echo ghrunner ;; 20) echo glrunner ;;
   esac
 }
 func_of() {
@@ -1387,7 +1590,7 @@ func_of() {
     9) echo check_9_timer ;; 10) echo check_10_docker_info ;; 11) echo check_11_nft_reboot ;;
     12) echo check_12_rc_port ;; 13) echo check_13_ssh ;; 14) echo check_14_nextcloud ;;
     15) echo check_15_forgejo ;; 16) echo check_16_wordpress ;; 17) echo check_17_uptimekuma ;;
-    18) echo check_18_grafana ;;
+    18) echo check_18_grafana ;; 19) echo check_19_ghrunner ;; 20) echo check_20_glrunner ;;
   esac
 }
 
