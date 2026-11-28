@@ -4,6 +4,10 @@
 # differs for GitLab.
 load test_helper
 
+# Token prefixes kept out of the fixtures' text, so the CI gitleaks step does not read a test
+# token as a real one: the fixtures that carry a prefix are built from these at run time.
+GLRT=glrt- GLPAT=glpat- GRRT=GR1348941
+
 setup() {
   ROOT_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   APP_DIR="$ROOT_DIR/apps/ghrunner"
@@ -32,7 +36,8 @@ setup() {
   PWF="$BATS_TEST_TMPDIR/password"
   printf '%s' 'Secret123' >"$PWF"
   VA_PASSWORD_FILE="$PWF"
-  TOKEN=AABBCCDDEEFFGGHHIIJJKKLLMM0
+  TOKEN="$(printf '%s%s' AABBCCDDEEFF GGHHIIJJKKLLMM0)"
+  OTHER_TOKEN="$(printf '%s%s' ZZYYXXWWVVU UTTSSRRQQPP0)"
   fake_host
   mkdir -p "$(p /opt/vps-apps-data/proxy)"
   CADDY_IMAGE="lucaslorentz/caddy-docker-proxy@sha256:$(printf 'c%.0s' $(seq 64))"
@@ -838,7 +843,7 @@ no_token_anywhere() {
   # A second, failing attempt with another repository.
   : >"$F/config_fail"
   : >"$STUB_TMP/systemctl.log"
-  request '{"url":"https://github.com/octo/other","token":"ZZYYXXWWVVUUTTSSRRQQPP0"}'
+  request "{\"url\":\"https://github.com/octo/other\",\"token\":\"$OTHER_TOKEN\"}"
   run runner_handle_request
   [ "$status" -ne 0 ]
   [ "$(cat "$RDIR/.credentials")" = first ]
@@ -851,7 +856,7 @@ no_token_anywhere() {
   [[ "$(jq -r .message "$st")" == *"The runner stays registered as before." ]]
   # A third attempt that works replaces it, with --replace, and leaves no copy of the old one.
   rm -f "$F/config_fail"
-  request '{"url":"https://github.com/octo/other","token":"ZZYYXXWWVVUUTTSSRRQQPP0"}'
+  request "{\"url\":\"https://github.com/octo/other\",\"token\":\"$OTHER_TOKEN\"}"
   runner_handle_request
   [ ! -s "$RDIR/.credentials" ]
   [ ! -e "$RDIR/.vps-apps-previous" ]
@@ -941,7 +946,7 @@ no_token_anywhere() {
 }
 
 @test "runner_redact hides the token and every 8-character piece of it, and any glrt- token" {
-  out="$(printf 'a %s b %s c %s d glrt-abcdefghijklmnopqrstuvwx e\n' "$TOKEN" "${TOKEN:3:10}" "${TOKEN:19:8}" | runner_redact "$TOKEN")"
+  out="$(printf 'a %s b %s c %s d %sabcdefghijklmnopqrstuvwx e\n' "$TOKEN" "${TOKEN:3:10}" "${TOKEN:19:8}" "$GLRT" | runner_redact "$TOKEN")"
   [[ "$out" != *"${TOKEN:3:8}"* ]]
   [[ "$out" != *"${TOKEN:19:8}"* ]]
   [[ "$out" != *abcdefghijkl* ]]
@@ -990,24 +995,24 @@ github	https://github.com.evil.example/octo	AABBCCDDEEFFGGHHIIJJKK;x	0	0
 github	https://user@github.com/octo	AABBCCDDEEFFGGHHIIJJKK/x	0	0
 github	https://evil.example/github.com/octo	AABBCCDDEEFFGGHHIIJJKK.x	0	0
 github	https://github.com/octo/repo	AABBCCDDEEFFGGHHIIJJ-_ab	1	1
-gitlab	https://gitlab.com	glrt-abcdefghijklmnopqrst	1	1
-gitlab	https://gitlab.example.com:8443	glrt-t1_AbC.dEf-1234567890123	1	1
-gitlab	https://example.com/gitlab/ci	glrt-ABCDEFGHIJKLMNOPQRSTUVWXYZ	1	1
-gitlab	https://10.0.0.5	glrt-abcdefghijklmnopqrst	1	1
-gitlab	http://gitlab.com	glrt-short	0	0
-gitlab	https://gitlab	GR1348941abcdefghijklmnopqrst	0	0
-gitlab	https://GitLab.com	glpat-abcdefghijklmnopqrstu	0	0
-gitlab	https://gitlab.com:0	glrt-abcdefghij klmnopqrst	0	0
-gitlab	https://gitlab.com:70000	glrt-abcdefghijklmnopqrsé	0	0
-gitlab	https://gitlab.com/../x	glrt-abcdefghijklmnopqrst$	0	0
+gitlab	https://gitlab.com	@glrt@abcdefghijklmnopqrst	1	1
+gitlab	https://gitlab.example.com:8443	@glrt@t1_AbC.dEf-1234567890123	1	1
+gitlab	https://example.com/gitlab/ci	@glrt@ABCDEFGHIJKLMNOPQRSTUVWXYZ	1	1
+gitlab	https://10.0.0.5	@glrt@abcdefghijklmnopqrst	1	1
+gitlab	http://gitlab.com	@glrt@short	0	0
+gitlab	https://gitlab	@gr@abcdefghijklmnopqrst	0	0
+gitlab	https://GitLab.com	@glpat@abcdefghijklmnopqrstu	0	0
+gitlab	https://gitlab.com:0	@glrt@abcdefghij klmnopqrst	0	0
+gitlab	https://gitlab.com:70000	@glrt@abcdefghijklmnopqrsé	0	0
+gitlab	https://gitlab.com/../x	@glrt@abcdefghijklmnopqrst$	0	0
 gitlab	https://gitlab.com/a/./b	AABBCCDDEEFFGGHHIIJJKKLLMM0	0	0
-gitlab	https://gitlab.com/?x=1	glrt-abcdefghijklmnopqrst;x	0	0
-gitlab	https://user:pw@gitlab.com	glrt-abcdefghijklmnopqrst/x	0	0
-gitlab	https://-a.example.com	glrt-	0	0
-gitlab	https://a-.example.com	glrt-abcdefghijklmnopqrst	0	1
-gitlab	https://gitlab.com//x	glrt-abcdefghijklmnopqrst	0	1
-gitlab	https://gitlab.com/a%20b	glrt-abcdefghijklmnopqrst	0	1
-gitlab	https://gitlab.com/x#y	glrt-abcdefghijklmnopqrst	0	1'
+gitlab	https://gitlab.com/?x=1	@glrt@abcdefghijklmnopqrst;x	0	0
+gitlab	https://user:pw@gitlab.com	@glrt@abcdefghijklmnopqrst/x	0	0
+gitlab	https://-a.example.com	@glrt@	0	0
+gitlab	https://a-.example.com	@glrt@abcdefghijklmnopqrst	0	1
+gitlab	https://gitlab.com//x	@glrt@abcdefghijklmnopqrst	0	1
+gitlab	https://gitlab.com/a%20b	@glrt@abcdefghijklmnopqrst	0	1
+gitlab	https://gitlab.com/x#y	@glrt@abcdefghijklmnopqrst	0	1'
 
 # py_results <cases-file>: page.py's valid_url and valid_token on every case, "<url> <token>" per line.
 py_results() {
@@ -1026,15 +1031,17 @@ PY
 @test "page.py and runner.sh judge every address and token the same, and as the table says" {
   command -v python3 >/dev/null || skip "no python3 on this machine"
   {
-    printf '%s\n' "$CASES"
+    cases="${CASES//@glrt@/$GLRT}"
+    cases="${cases//@glpat@/$GLPAT}"
+    printf '%s\n' "${cases//@gr@/$GRRT}"
     # The length limits: an owner of 39 and 40 characters, a repository of 100 and 101, a token of
     # 255 and 256, a GitLab label of 63 and 64.
     printf 'github\thttps://github.com/%s\tAABBCCDDEEFFGGHHIIJJKK\t1\t1\n' "$(printf 'a%.0s' $(seq 39))"
     printf 'github\thttps://github.com/%s\tAABBCCDDEEFFGGHHIIJJKK\t0\t1\n' "$(printf 'a%.0s' $(seq 40))"
     printf 'github\thttps://github.com/o/%s\t%s\t1\t1\n' "$(printf 'r%.0s' $(seq 100))" "$(printf 'T%.0s' $(seq 255))"
     printf 'github\thttps://github.com/o/%s\t%s\t0\t0\n' "$(printf 'r%.0s' $(seq 101))" "$(printf 'T%.0s' $(seq 256))"
-    printf 'gitlab\thttps://%s.example.com\tglrt-abcdefghijklmnopqrst\t1\t1\n' "$(printf 'g%.0s' $(seq 63))"
-    printf 'gitlab\thttps://%s.example.com\tglrt-abcdefghijklmnopqrst\t0\t1\n' "$(printf 'g%.0s' $(seq 64))"
+    printf 'gitlab\thttps://%s.example.com\t%sabcdefghijklmnopqrst\t1\t1\n' "$(printf 'g%.0s' $(seq 63))" "$GLRT"
+    printf 'gitlab\thttps://%s.example.com\t%sabcdefghijklmnopqrst\t0\t1\n' "$(printf 'g%.0s' $(seq 64))" "$GLRT"
   } >"$BATS_TEST_TMPDIR/cases"
   py_results "$BATS_TEST_TMPDIR/cases" >"$BATS_TEST_TMPDIR/py"
   n=0

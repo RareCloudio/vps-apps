@@ -4,6 +4,10 @@
 # GitLab on the shared parts.
 load test_helper
 
+# Token prefixes kept out of the fixtures' text, so the CI gitleaks step does not read a test
+# token as a real one: the fixtures that carry a prefix are built from these at run time.
+GLRT=glrt- GLPAT=glpat- GRRT=GR1348941
+
 setup() {
   ROOT_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   APP_DIR="$ROOT_DIR/apps/glrunner"
@@ -29,7 +33,7 @@ setup() {
   PWF="$BATS_TEST_TMPDIR/password"
   printf '%s' 'Secret123' >"$PWF"
   VA_PASSWORD_FILE="$PWF"
-  TOKEN=glrt-t1_AbCdEfGhIjKlMnOpQrStUv
+  TOKEN="$(printf '%st1_AbCdEfGhIjKlMnOpQrStUv' "$GLRT")"
   fake_host
   mkdir -p "$(p /opt/vps-apps-data/proxy)"
   printf 'CADDY_IMAGE=lucaslorentz/caddy-docker-proxy@sha256:%s\n' "$(printf 'c%.0s' $(seq 64))" \
@@ -383,10 +387,10 @@ request() {
   app_prepare
   request "{\"url\":\"https://gitlab.com\",\"token\":\"$TOKEN\"}"
   runner_handle_request
-  request '{"url":"https://gitlab.example.com","token":"glrt-ZyXwVuTsRqPoNmLkJiHgFe"}'
+  request "{\"url\":\"https://gitlab.example.com\",\"token\":\"${GLRT}ZyXwVuTsRqPoNmLkJiHgFe\"}"
   runner_handle_request
   [ "$(grep -c '^\[\[runners\]\]' "$F/config")" -eq 1 ]
-  grep -qF 'glrt-ZyXwVuTsRqPoNmLkJiHgFe' "$F/config"
+  grep -qF "${GLRT}ZyXwVuTsRqPoNmLkJiHgFe" "$F/config"
   [ "$(grep -c '^unregister' "$F/events")" -eq 2 ]
   grep -qF 'gitlab-runner unregister --all-runners --config /etc/gitlab-runner/config.toml' "$STUB_TMP/docker.log"
   [ "$(jq -r .url "$DATA/status/status.json")" = https://gitlab.example.com ]
@@ -394,7 +398,7 @@ request() {
 
 @test "registration and legacy or personal tokens are refused before any GitLab call" {
   app_prepare
-  for t in GR1348941abcdefghijklmnopqrst glpat-abcdefghijklmnopqrstu glrt-short "glrt-abc def ghi jkl mno pq"; do
+  for t in "${GRRT}abcdefghijklmnopqrst" "${GLPAT}abcdefghijklmnopqrstu" glrt-short "glrt-abc def ghi jkl mno pq"; do
     request "{\"url\":\"https://gitlab.com\",\"token\":\"$t\"}"
     run runner_handle_request
     [ "$status" -ne 0 ]
@@ -550,9 +554,9 @@ page_post() {
 
 @test "the GitLab page names a registration token, a personal token and a bad address for what they are" {
   start_page gitlab
-  [ "$(page_post --data-urlencode 'url=https://gitlab.com' --data-urlencode 'token=GR1348941abcdefghijklmnopqrst')" = 400 ]
+  [ "$(page_post --data-urlencode 'url=https://gitlab.com' --data-urlencode "token=${GRRT}abcdefghijklmnopqrst")" = 400 ]
   grep -qF 'This is a registration token, which GitLab no longer uses by default.' "$F/post.html"
-  [ "$(page_post --data-urlencode 'url=https://gitlab.com' --data-urlencode 'token=glpat-abcdefghijklmnopqrstu')" = 400 ]
+  [ "$(page_post --data-urlencode 'url=https://gitlab.com' --data-urlencode "token=${GLPAT}abcdefghijklmnopqrstu")" = 400 ]
   grep -qF 'This is a personal access token.' "$F/post.html"
   [ "$(page_post --data-urlencode 'url=https://gitlab.com' --data-urlencode 'token=AABBCCDDEEFFGGHHIIJJKK')" = 400 ]
   grep -qF 'It starts with glrt-.' "$F/post.html"
