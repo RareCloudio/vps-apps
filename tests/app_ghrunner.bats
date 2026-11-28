@@ -101,8 +101,8 @@ stub_docker() {
 }
 
 # make_runner_tarball: a fake actions/runner release in $TARBALL, its SHA-256 in RUNNER_SHA. Its
-# config.sh records its argv, the token it got from its environment and HOME in $F, prints a line
-# with a piece of the token, and fails like a refused token when $F/config_fail exists.
+# config.sh records its argv, the token it got from its environment, HOME and TMPDIR in $F, prints
+# a line with a piece of the token, and fails like a refused token when $F/config_fail exists.
 make_runner_tarball() {
   local src="$BATS_TEST_TMPDIR/runner-src"
   mkdir -p "$src/bin"
@@ -111,6 +111,7 @@ make_runner_tarball() {
 printf '%s\n' "\$@" >"$F/config_argv"
 printf '%s' "\${ACTIONS_RUNNER_INPUT_TOKEN-}" >"$F/config_token"
 printf '%s' "\$HOME" >"$F/config_home"
+printf '%s' "\${TMPDIR-}" >"$F/config_tmpdir"
 cd "\$(dirname "\$0")"
 if [ -e "$F/config_fail" ]; then
   echo "Http response code: NotFound from 'POST https://api.github.com/actions/runner-registration' (\${ACTIONS_RUNNER_INPUT_TOKEN:2:12})"
@@ -799,6 +800,12 @@ no_token_anywhere() {
   [ "$status" -eq 0 ]
   [ "$(cat "$F/config_token")" = "$TOKEN" ]
   [ "$(cat "$F/config_home")" = /home/ghrunner ]
+  # Not the register unit's root-only TMPDIR: a folder of ghrunner's own, 0700.
+  [ "$(cat "$F/config_tmpdir")" = /home/ghrunner/tmp ]
+  [ "$(stat -c %a "$(p /home/ghrunner/tmp)")" = 700 ]
+  # Made by ghrunner itself, so root never writes where the runner's jobs can plant a link.
+  grep -qxF "setpriv --reuid=ghrunner --regid=ghrunner --init-groups -- mkdir -p -m 0700 $(p /home/ghrunner/tmp)" "$STUB_TMP/setpriv.log"
+  refute_grep -qF "chown ghrunner:ghrunner $(p /home/ghrunner/tmp)" "$STUB_TMP/calls.log"
   [ "$(cat "$F/config_argv")" = "$(printf '%s\n' --unattended --url https://github.com/octo/repo --name ghrunner-ab12cd --work _work --replace)" ]
   grep -qxF "setpriv --reuid=ghrunner --regid=ghrunner --init-groups -- $RDIR/config.sh --unattended --url https://github.com/octo/repo --name ghrunner-ab12cd --work _work --replace" "$STUB_TMP/setpriv.log"
   grep -qxF 'stop vps-apps-ghrunner.service' "$STUB_TMP/systemctl.log"

@@ -34,6 +34,7 @@ VA_RUNNER_KIND=github
 
 VA_GH_RUNNER_USER=ghrunner
 VA_GH_RUNNER_HOME=/home/ghrunner
+VA_GH_RUNNER_TMP=/home/ghrunner/tmp
 VA_GH_RUNNER_UNIT=vps-apps-ghrunner.service
 VA_GH_RUNNER_RELEASE_URL="https://api.github.com/repos/actions/runner/releases/latest"
 # The libraries the runner's .NET needs, by the names its bin/installdependencies.sh picks on
@@ -47,10 +48,21 @@ gh_runner_dir() {
 }
 
 # gh_as_runner <command...>: the command as the user ghrunner with its groups (docker), in an
-# environment that is this one plus its own HOME and USER. That environment is the only way the
-# registration token reaches config.sh.
+# environment that is this one plus its own HOME, USER and TMPDIR. That environment is the only way
+# the registration token reaches config.sh. TMPDIR is ghrunner's own folder, made by ghrunner itself
+# (root never writes in a home its jobs control): the register unit's TMPDIR is root's, where bash
+# and .NET could not write as ghrunner.
 gh_as_runner() {
-  HOME="$VA_GH_RUNNER_HOME" USER="$VA_GH_RUNNER_USER" LOGNAME="$VA_GH_RUNNER_USER" \
+  gh_setpriv mkdir -p -m 0700 "$(p "$VA_GH_RUNNER_TMP")" || {
+    log "ghrunner: cannot make $VA_GH_RUNNER_TMP"
+    return 1
+  }
+  gh_setpriv "$@"
+}
+
+# gh_setpriv <command...>: the command as ghrunner, with gh_as_runner's environment.
+gh_setpriv() {
+  HOME="$VA_GH_RUNNER_HOME" USER="$VA_GH_RUNNER_USER" LOGNAME="$VA_GH_RUNNER_USER" TMPDIR="$VA_GH_RUNNER_TMP" \
     setpriv --reuid="$VA_GH_RUNNER_USER" --regid="$VA_GH_RUNNER_USER" --init-groups -- "$@"
 }
 
