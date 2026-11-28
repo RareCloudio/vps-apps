@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Prints the first-boot recipe for an app. Used by tests and by the release endpoint.
-# Usage: render-recipe --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro]
+# Usage: render-recipe --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro]
 #          --version <40 hex chars>
 # Replaces only __APP__, __MODE__ and __VERSION__; the Virtualizor {{tokens}} stay as they are.
 set -euo pipefail
 
 die() {
   echo "render-recipe: $1" >&2
-  echo "usage: render-recipe --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> [--mode starter|pro]" \
+  echo "usage: render-recipe --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> [--mode starter|pro]" \
     "--version <sha40>" >&2
   exit 2
 }
@@ -29,9 +29,9 @@ while [ $# -gt 0 ]; do
 done
 
 case "$app" in
-  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma) ;;
+  docker | n8n | nextcloud | forgejo | wordpress | uptimekuma | grafana) ;;
   "") die "--app is required" ;;
-  *) die "--app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma" ;;
+  *) die "--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana" ;;
 esac
 if [ -n "$mode" ]; then
   [ "$app" = n8n ] || die "--mode is only valid with --app n8n"

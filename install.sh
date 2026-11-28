@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Turns a fresh Ubuntu 24.04 VPS into an app server: Docker, n8n, Nextcloud, Forgejo, WordPress or
-# Uptime Kuma.
-# Usage: install.sh --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> --host <fqdn> --ip <ipv4>
+# Turns a fresh Ubuntu 24.04 VPS into an app server: Docker, n8n, Nextcloud, Forgejo, WordPress,
+# Uptime Kuma or Grafana.
+# Usage: install.sh --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> --host <fqdn> --ip <ipv4>
 #          --password-file <path> [--mode starter|pro] [--admin-email <email>]
 #        install.sh --site-failed   (the bootstrap, after its last attempt: see site_failed)
 # Exit codes: 0 done, 1 a failed step (retryable), 2 bad arguments, 3 the wrong OS.
@@ -15,7 +15,7 @@ VA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage_error() {
   echo "install.sh: $1" >&2
-  echo "usage: install.sh --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma> --host <fqdn> --ip <ipv4>" \
+  echo "usage: install.sh --app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana> --host <fqdn> --ip <ipv4>" \
     "--password-file <path> [--mode starter|pro] [--admin-email <email>]" >&2
   exit 2
 }
@@ -68,9 +68,9 @@ parse_args() {
   done
 
   case "$VA_APP" in
-    docker | n8n | nextcloud | forgejo | wordpress | uptimekuma) ;;
+    docker | n8n | nextcloud | forgejo | wordpress | uptimekuma | grafana) ;;
     "") usage_error "--app is required" ;;
-    *) usage_error "--app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma" ;;
+    *) usage_error "--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana" ;;
   esac
 
   [ -n "$VA_HOST" ] || usage_error "--host is required"

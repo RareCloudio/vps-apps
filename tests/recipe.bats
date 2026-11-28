@@ -109,10 +109,10 @@ install_recipe() {
 @test "render-recipe names every app when --app is unknown, and takes --mode with n8n only" {
   run "$RENDER" --app foo --version "$SHA"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress or uptimekuma"* ]]
-  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma>"* ]]
+  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana"* ]]
+  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana>"* ]]
   local app
-  for app in docker nextcloud forgejo wordpress uptimekuma; do
+  for app in docker nextcloud forgejo wordpress uptimekuma grafana; do
     run "$RENDER" --app "$app" --mode pro --version "$SHA"
     [ "$status" -eq 2 ]
     [[ "$output" == *"--mode is only valid with --app n8n"* ]]
@@ -144,6 +144,10 @@ renders_and_installs() {
 
 @test "an uptimekuma recipe renders and its bootstrap runs install.sh --app uptimekuma" {
   renders_and_installs uptimekuma
+}
+
+@test "a grafana recipe renders and its bootstrap runs install.sh --app grafana" {
+  renders_and_installs grafana
 }
 
 @test "the bootstrap refuses an APP it does not know: failed:args" {

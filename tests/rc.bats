@@ -519,6 +519,10 @@ loads_app() {
   loads_app uptimekuma
 }
 
+@test "rc takes APP=grafana and loads its hooks" {
+  loads_app grafana
+}
+
 @test "the motd reads the host from app.env, and from the bootstrap's env file without it" {
   rm "$ETC/env"
   printf 'APP=n8n\nMODE=\nVA_HOST=other.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
