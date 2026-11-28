@@ -1151,7 +1151,10 @@ page_post() {
   grep -qi '^x-frame-options: DENY' "$F/page.head"
   grep -qi '^cache-control: no-store' "$F/page.head"
   grep -qi '^x-content-type-options: nosniff' "$F/page.head"
-  grep -qi '^referrer-policy: no-referrer' "$F/page.head"
+  # same-origin, not no-referrer: under no-referrer a browser sends "Origin: null" with the form's
+  # POST (Fetch standard, "append a request Origin header"), and the Origin check refuses that.
+  grep -qi '^referrer-policy: same-origin' "$F/page.head"
+  [ "$(grep -ci '^referrer-policy:' "$F/page.head")" -eq 1 ]
   # The style the policy allows is the one on the page.
   style="$(sed -n 's/.*<style>\(.*\)<\/style>.*/\1/p' "$F/page.html")"
   want="$(printf '%s' "$style" | openssl dgst -sha256 -binary | base64)"
@@ -1204,6 +1207,23 @@ page_post() {
   [ -z "$(ls -A "$PAGE_INBOX")" ]
   # The same form with everything in place goes through.
   [ "$(page_post -H 'Sec-Fetch-Site: same-origin' --data-urlencode "csrf=$csrf" "${form[@]}")" = 303 ]
+}
+
+@test "a same-origin form POST with the headers a browser sends passes the check" {
+  start_page github
+  page_get
+  csrf="$(csrf_of "$F/page.html")"
+  # What Chrome, Firefox and Safari send when the customer clicks Register on the page served with
+  # Referrer-Policy: same-origin: the page's own Origin and Referer and the fetch metadata of a
+  # same-origin navigation.
+  code="$(real_curl -sS -o "$F/post.html" -w '%{http_code}' -b "$COOKIE" -H 'Host: runner.example.com' \
+    -H 'Origin: https://runner.example.com' -H 'Referer: https://runner.example.com/' \
+    -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document' \
+    -H 'Sec-Fetch-User: ?1' -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "csrf=$csrf" --data-urlencode 'url=https://github.com/octo/repo' \
+    --data-urlencode "token=$TOKEN" "$PAGE_URL/")"
+  [ "$code" = 303 ]
+  [ "$(jq -r .url "$PAGE_INBOX/request")" = https://github.com/octo/repo ]
 }
 
 @test "an invalid address or token is refused with a message, the address kept, the token never echoed" {

@@ -302,7 +302,10 @@ class Page(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # same-origin, not no-referrer: under no-referrer browsers send "Origin: null" with the form's
+        # POST (Fetch standard, "append a request Origin header"), which same_origin() refuses.
+        # same-origin still sends nothing to another site.
+        self.send_header("Referrer-Policy", "same-origin")
         for name, value in headers:
             self.send_header(name, value)
         self.end_headers()
