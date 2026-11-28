@@ -109,10 +109,10 @@ install_recipe() {
 @test "render-recipe names every app when --app is unknown, and takes --mode with n8n only" {
   run "$RENDER" --app foo --version "$SHA"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana"* ]]
-  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana>"* ]]
+  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma, grafana, ghrunner or glrunner"* ]]
+  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana|ghrunner|glrunner>"* ]]
   local app
-  for app in docker nextcloud forgejo wordpress uptimekuma grafana; do
+  for app in docker nextcloud forgejo wordpress uptimekuma grafana ghrunner glrunner; do
     run "$RENDER" --app "$app" --mode pro --version "$SHA"
     [ "$status" -eq 2 ]
     [[ "$output" == *"--mode is only valid with --app n8n"* ]]
@@ -148,6 +148,14 @@ renders_and_installs() {
 
 @test "a grafana recipe renders and its bootstrap runs install.sh --app grafana" {
   renders_and_installs grafana
+}
+
+@test "a ghrunner recipe renders and its bootstrap runs install.sh --app ghrunner" {
+  renders_and_installs ghrunner
+}
+
+@test "a glrunner recipe renders and its bootstrap runs install.sh --app glrunner" {
+  renders_and_installs glrunner
 }
 
 @test "the bootstrap refuses an APP it does not know: failed:args" {

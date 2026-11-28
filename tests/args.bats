@@ -17,8 +17,8 @@ setup() {
 @test "an unknown --app names every app, in the error and in the usage" {
   run bash "$INSTALL" --app foo --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma or grafana"* ]]
-  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana>"* ]]
+  [[ "$output" == *"--app must be docker, n8n, nextcloud, forgejo, wordpress, uptimekuma, grafana, ghrunner or glrunner"* ]]
+  [[ "$output" == *"--app <docker|n8n|nextcloud|forgejo|wordpress|uptimekuma|grafana|ghrunner|glrunner>"* ]]
 }
 
 # parses_as <app>: parse_args takes --app <app> and sets VA_APP to it.
@@ -49,9 +49,17 @@ parses_as() {
   parses_as grafana
 }
 
+@test "--app ghrunner is accepted" {
+  parses_as ghrunner
+}
+
+@test "--app glrunner is accepted" {
+  parses_as glrunner
+}
+
 @test "--mode is rejected with every app but n8n" {
   local app
-  for app in docker nextcloud forgejo wordpress uptimekuma grafana; do
+  for app in docker nextcloud forgejo wordpress uptimekuma grafana ghrunner glrunner; do
     run bash "$INSTALL" --app "$app" --mode pro --host a.example.com --ip 1.2.3.4 --password-file "$PWF"
     [ "$status" -eq 2 ]
     [[ "$output" == *"--mode is only valid with --app n8n"* ]]

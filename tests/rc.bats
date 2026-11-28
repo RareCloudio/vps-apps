@@ -523,6 +523,14 @@ loads_app() {
   loads_app grafana
 }
 
+@test "rc takes APP=ghrunner and loads its hooks" {
+  loads_app ghrunner
+}
+
+@test "rc takes APP=glrunner and loads its hooks" {
+  loads_app glrunner
+}
+
 @test "the motd reads the host from app.env, and from the bootstrap's env file without it" {
   rm "$ETC/env"
   printf 'APP=n8n\nMODE=\nVA_HOST=other.example.com\nVA_IP=203.0.113.7\n' >"$ETC/app.env"
