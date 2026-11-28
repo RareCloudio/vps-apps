@@ -288,9 +288,10 @@ runner_register() {
   if [ "$rc" -eq 0 ] && [ -f "$dir/.runner" ]; then
     rm -f "$out"
     rm -rf "$keep"
+    # GitHub has the runner now, so the status keeps the address even when the unit does not start.
     if ! systemctl enable "$VA_GH_RUNNER_UNIT" || ! systemctl restart "$VA_GH_RUNNER_UNIT"; then
-      RUNNER_RESULT="Registered with $url, but the runner does not start. Details: journalctl -u $VA_GH_RUNNER_UNIT"
-      return 1
+      RUNNER_RESULT="Registered with $url as $name, but the runner does not start. Details: journalctl -u $VA_GH_RUNNER_UNIT"
+      return 0
     fi
     RUNNER_RESULT="Registered with $url as $name. The runner is waiting for jobs."
     return 0

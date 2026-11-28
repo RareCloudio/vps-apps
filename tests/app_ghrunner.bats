@@ -825,6 +825,20 @@ no_token_anywhere() {
   no_token_anywhere "$TOKEN"
 }
 
+@test "a registration GitHub took whose runner then does not start keeps the address and says so" {
+  installed
+  systemctl() {
+    [ "$1" != restart ] || return 1
+    command systemctl "$@"
+  }
+  request "{\"url\":\"https://github.com/octo/repo\",\"token\":\"$TOKEN\"}"
+  run runner_handle_request
+  st="$DATA/status/status.json"
+  [ "$(jq -r .state "$st")" = registered ]
+  [ "$(jq -r .url "$st")" = https://github.com/octo/repo ]
+  [ "$(jq -r .message "$st")" = "Registered with https://github.com/octo/repo as ghrunner-ab12cd, but the runner does not start. Details: journalctl -u vps-apps-ghrunner.service" ]
+}
+
 @test "a token GitHub refuses fails with a short reason, and the token is in no log, file or status" {
   installed
   : >"$F/config_fail"
